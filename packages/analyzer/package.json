@@ -1,5 +1,5 @@
 {
-  "name": "@tensorjetai/agentfence",
+  "name": "@agentfence/analyzer",
   "version": "0.1.2",
   "description": "Deterministic static security analyzer for AI agents, MCP servers, and GitHub Actions workflows",
   "license": "Apache-2.0",

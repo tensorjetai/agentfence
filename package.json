@@ -18,7 +18,8 @@
     "test:fixtures": "vitest run packages/analyzer/test/fixture-corpus.test.ts",
     "benchmark:analyzer": "tsx packages/analyzer/test/benchmark.ts",
     "benchmark:accuracy": "tsx packages/analyzer/test/benchmark-cli.ts",
-    "evaluate:real-world": "tsx packages/analyzer/test/real-world/runner.ts"
+    "evaluate:real-world": "tsx packages/analyzer/test/real-world/runner.ts",
+    "publish:npm": "node scripts/publish-npm.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

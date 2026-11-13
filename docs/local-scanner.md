@@ -1,6 +1,6 @@
 # Local scanner and Action usage
 
-AgentFence scans workflows and MCP configurations locally with zero network egress during analysis. The standalone Apache-2.0 CLI (`agentfence-cli` and `@tensorjetai/agentfence` v0.1.1) is published on npm, and this repository provides the composite GitHub Action (`action.yml`).
+AgentFence scans workflows and MCP configurations locally with zero network egress during analysis. The standalone Apache-2.0 CLI (`agentfence-cli` and `@tensorjetai/agentfence` v0.1.2) is published on npm, and this repository provides the composite GitHub Action (`action.yml`).
 
 ## CLI
 

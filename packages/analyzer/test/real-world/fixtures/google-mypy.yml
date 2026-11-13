@@ -1,0 +1,15 @@
+# This workflow runs mypy for static type checking.
+name: Run mypy
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run mypy
+        run: mypy google/genai/

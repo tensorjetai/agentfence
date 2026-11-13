@@ -1,0 +1,10 @@
+"on": issues
+permissions:
+  issues: write
+jobs:
+  triage:
+    steps:
+      - uses: openai/codex-action@v1
+        with:
+          allow-users: "*"
+          prompt: "Triage: ${{ github.event.issue.body.* }}"

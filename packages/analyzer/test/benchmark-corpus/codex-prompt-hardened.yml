@@ -1,0 +1,8 @@
+"on": workflow_dispatch
+permissions: {}
+jobs:
+  review:
+    steps:
+      - uses: openai/codex-action@v1
+        with:
+          prompt: "Review the fixed release notes"

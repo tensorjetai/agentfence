@@ -1,0 +1,10 @@
+"on": workflow_dispatch
+permissions: {}
+jobs:
+  review:
+    steps:
+      - id: agent
+        uses: openai/codex-action@v1
+        with:
+          prompt: "Inspect the release notes"
+      - run: ${{ steps.agent.outputs.final-message }}

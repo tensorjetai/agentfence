@@ -1,0 +1,9 @@
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  triage:
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: Review the current repository state.

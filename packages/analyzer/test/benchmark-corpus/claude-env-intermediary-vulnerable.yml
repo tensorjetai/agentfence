@@ -1,0 +1,12 @@
+on: issue_comment
+permissions:
+  contents: write
+jobs:
+  triage:
+    env:
+      ISSUE_BODY: ${{ github.event.comment.body }}
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          allowed_non_write_users: "*"
+          prompt: ${{ env.ISSUE_BODY }}

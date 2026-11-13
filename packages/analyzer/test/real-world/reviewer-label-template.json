@@ -1,0 +1,34 @@
+{
+  "status": "unreviewed-template",
+  "instructions": "For an independent review, copy this file before labeling. Review the workflow without first viewing analyzer output. Do not infer a security issue solely from the presence of a permission or action.",
+  "cases": [
+    {
+      "caseId": "case-01",
+      "sourceFixture": "",
+      "reviewerAssessment": "",
+      "ruleIds": [],
+      "rationale": ""
+    },
+    {
+      "caseId": "case-02",
+      "sourceFixture": "",
+      "reviewerAssessment": "",
+      "ruleIds": [],
+      "rationale": ""
+    },
+    {
+      "caseId": "case-03",
+      "sourceFixture": "",
+      "reviewerAssessment": "",
+      "ruleIds": [],
+      "rationale": ""
+    },
+    {
+      "caseId": "case-04",
+      "sourceFixture": "",
+      "reviewerAssessment": "",
+      "ruleIds": [],
+      "rationale": ""
+    }
+  ]
+}

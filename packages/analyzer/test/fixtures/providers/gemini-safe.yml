@@ -1,0 +1,9 @@
+on: workflow_dispatch
+permissions: {}
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+        with:
+          prompt: Review committed documentation.

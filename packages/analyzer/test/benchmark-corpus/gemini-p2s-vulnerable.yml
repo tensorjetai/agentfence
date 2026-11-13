@@ -1,0 +1,11 @@
+on: pull_request_target
+permissions:
+  issues: write
+jobs:
+  triage:
+    steps:
+      - id: gemini
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          prompt: Summarize the pull request.
+      - run: gh issue edit --body "${{ steps.gemini.outputs.summary }}"

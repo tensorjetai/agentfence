@@ -1,0 +1,19 @@
+name: Docs
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy docs
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build docs
+        run: sphinx-build -b html docs/source _site

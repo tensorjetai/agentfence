@@ -1,0 +1,11 @@
+on: issues
+permissions:
+  contents: write
+  issues: write
+jobs:
+  triage:
+    steps:
+      - uses: anthropics/claude-code-base-action@v1
+        with:
+          prompt: ${{ github.event.issue.body }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -1,0 +1,35 @@
+{
+  "name": "agentfence",
+  "version": "0.1.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@10.30.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "scan": "tsx packages/analyzer/src/cli-entry.ts",
+    "build": "pnpm -r build",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:analyzer": "vitest run packages/analyzer",
+    "test:fixtures": "vitest run packages/analyzer/test/fixture-corpus.test.ts",
+    "benchmark:analyzer": "tsx packages/analyzer/test/benchmark.ts",
+    "benchmark:accuracy": "tsx packages/analyzer/test/benchmark-cli.ts",
+    "evaluate:real-world": "tsx packages/analyzer/test/real-world/runner.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.11",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": "^0.25.0"
+    }
+  }
+}

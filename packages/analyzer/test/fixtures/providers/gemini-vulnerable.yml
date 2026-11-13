@@ -1,0 +1,10 @@
+on: discussion
+permissions: write-all
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          prompt: ${{ github.event.discussion.body }}

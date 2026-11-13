@@ -1,0 +1,44 @@
+name: AgentFence local workflow scan
+description: Analyze local AI workflows and produce SARIF without uploading source.
+inputs:
+  path:
+    description: Repository-relative workflow file or directory to scan.
+    default: .
+outputs:
+  sarif-file:
+    description: Absolute path to the generated SARIF report.
+    value: ${{ steps.scan.outputs.sarif-file }}
+  exit-code:
+    description: 0 for no findings, 1 for findings, 2 for incomplete analysis.
+    value: ${{ steps.scan.outputs.exit-code }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.30.0
+        run_install: false
+    - name: Build scanner
+      shell: bash
+      env:
+        AGENTFENCE_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        pnpm --dir "$AGENTFENCE_ACTION_PATH" install --frozen-lockfile --ignore-scripts
+        pnpm --dir "$AGENTFENCE_ACTION_PATH" --filter '@agentfence/analyzer...' build
+    - name: Scan local workflows
+      id: scan
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        AGENTFENCE_ACTION_PATH: ${{ github.action_path }}
+        AGENTFENCE_INPUT_PATH: ${{ inputs.path }}
+      run: |
+        report="$RUNNER_TEMP/agentfence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.sarif"
+        status=0
+        node "$AGENTFENCE_ACTION_PATH/packages/analyzer/dist/src/cli-entry.js" --format sarif "$AGENTFENCE_INPUT_PATH" > "$report" || status=$?
+        echo "sarif-file=$report" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$status" >> "$GITHUB_OUTPUT"
+        exit "$status"

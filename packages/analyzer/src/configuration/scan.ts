@@ -19,7 +19,7 @@ export function scanConfiguration(input: ScanInput): ScanResult {
             input.path,
             "AF007",
             issue.code,
-            String(issue.range.start.offset),
+            issue.target ?? `${issue.code}:${issue.range.start.line}`,
           ].join("\0"),
         )
         .digest("hex"),

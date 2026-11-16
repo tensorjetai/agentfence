@@ -125,12 +125,15 @@ export function evaluateRules(
     }
     for (const checkout of job.steps.filter((step) => step.uses?.startsWith("actions/checkout@"))) {
       const ref = checkout.with.ref ?? "";
-      const explicitlyUntrusted = parseExpressions(ref).references.some((item) =>
-        /pull_request\.head|head_ref/.test(item.path),
+      const refExpressions = parseExpressions(ref).references;
+      const untrustedRefExpr = refExpressions.some(
+        (item) =>
+          /pull_request\.head|head_ref|workflow_run\.head_|merge_commit_sha/.test(item.path) ||
+          (/refs\/pull\//i.test(ref) && /(?:pull_request|issue)\.number/.test(item.path)),
       );
       const defaultPullRequestCheckout =
         !ref && workflow.triggers.some((trigger) => trigger.event === "pull_request");
-      const untrusted = explicitlyUntrusted || defaultPullRequestCheckout;
+      const untrusted = untrustedRefExpr || defaultPullRequestCheckout;
       if (untrusted && (privilege.length > 0 || jobSecrets)) {
         findings.push(
           makeFinding(
@@ -299,20 +302,67 @@ function jobHasAnySecrets(job: WorkflowJob): boolean {
 }
 
 function hasSecretReference(value: string): boolean {
-  return parseExpressions(value).references.some((reference) =>
-    reference.path.startsWith("secrets."),
+  return parseExpressions(value).references.some(
+    (reference) => reference.path === "secrets" || reference.path.startsWith("secrets."),
   );
 }
 
+function splitTopLevelOrClauses(condition: string): string[] {
+  const clauses: string[] = [];
+  let depth = 0;
+  let quote: string | undefined;
+  let start = 0;
+  for (let i = 0; i < condition.length; i += 1) {
+    const ch = condition[i]!;
+    if (quote !== undefined) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && ch === "|" && condition[i + 1] === "|") {
+      clauses.push(condition.slice(start, i).trim());
+      i += 1;
+      start = i + 1;
+    }
+  }
+  clauses.push(condition.slice(start).trim());
+  return clauses.filter(Boolean);
+}
+
+function clauseEnforcesTrustGate(clause: string): boolean {
+  const unwrapped =
+    clause.startsWith("(") && clause.endsWith(")") ? clause.slice(1, -1).trim() : clause;
+  if (unwrapped !== clause && splitTopLevelOrClauses(unwrapped).length > 1) {
+    return splitTopLevelOrClauses(unwrapped).every(clauseEnforcesTrustGate);
+  }
+  const hasAssociation =
+    /(?:^|[\s&(])(?:github\.event\.[^&\s]*\.)?author_association\s*==\s*['"](?:OWNER|MEMBER|COLLABORATOR)['"]/i.test(
+      unwrapped,
+    ) ||
+    /(?:^|[\s&(])contains\([^)]*(?:OWNER|MEMBER|COLLABORATOR)[^)]*author_association[^)]*\)/i.test(
+      unwrapped,
+    );
+  const hasFixedActor =
+    /(?:^|[\s&(])github\.actor\s*==\s*['"][A-Za-z0-9](?:[A-Za-z0-9-]{0,38})['"]/i.test(unwrapped);
+  return hasAssociation || hasFixedActor;
+}
+
+function expressionEnforcesTrustGate(condition: string | undefined): boolean {
+  const trimmed = (condition ?? "").trim();
+  if (!trimmed) return false;
+  const clauses = splitTopLevelOrClauses(trimmed);
+  return clauses.length > 0 && clauses.every(clauseEnforcesTrustGate);
+}
+
 function hasTrustGate(job: WorkflowJob, agent: WorkflowStep): boolean {
-  const conditions = [job.if ?? "", agent.if ?? ""].join(" ");
-  const trustedAssociation =
-    /author_association\s*==\s*['"](?:OWNER|MEMBER|COLLABORATOR)['"]/i.test(conditions) ||
-    /contains\([^)]*(?:OWNER|MEMBER|COLLABORATOR)[^)]*author_association[^)]*\)/i.test(conditions);
-  const fixedActor = /github\.actor\s*==\s*['"][A-Za-z0-9](?:[A-Za-z0-9-]{0,38})['"]/i.test(
-    conditions,
+  return (
+    expressionEnforcesTrustGate(job.if) ||
+    expressionEnforcesTrustGate(agent.if) ||
+    hasImplicitWriteActorGuard(agent)
   );
-  return trustedAssociation || fixedActor || hasImplicitWriteActorGuard(agent);
 }
 
 function dedupe(findings: Finding[]): Finding[] {

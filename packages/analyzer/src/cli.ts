@@ -480,7 +480,12 @@ async function discoverDirectory(
   else if (agentsDirectory) await visit(directory, 0, "agent-instructions");
   else {
     if (instructionFile) await visit(directory, 0, "root-instructions");
-    for (const configPath of [".claude/settings.json", ".gemini/settings.json"]) {
+    for (const configPath of [
+      ".claude/settings.json",
+      ".gemini/settings.json",
+      ".cursor/mcp.json",
+      ".vscode/mcp.json",
+    ]) {
       const candidate = resolve(directory, configPath);
       try {
         const info = await lstat(candidate);

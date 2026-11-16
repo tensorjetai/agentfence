@@ -55,7 +55,13 @@ describe("implicit provider prompt ingestion", () => {
     ).toEqual([]);
   });
 
-  it("does not model unpinned or unsupported Claude versions", () => {
+  it("models SHA-pinned and patch-pinned Claude interactive workflows while excluding @main", () => {
+    expect(
+      refs(
+        `on: issue_comment\njobs:\n  x:\n    steps:\n      - uses: anthropics/claude-code-action@0123456789abcdef0123456789abcdef01234567\n`,
+      ),
+    ).toEqual(["github.event.issue.title", "github.event.issue.body", "github.event.comment.body"]);
+
     expect(
       refs(
         `on: issues\njobs:\n  x:\n    steps:\n      - uses: anthropics/claude-code-action@main\n`,

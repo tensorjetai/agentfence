@@ -7,6 +7,7 @@ export interface McpConfigurationIssue {
   range: SourceRange;
   message: string;
   remediation: string;
+  target?: string;
 }
 
 export interface McpConfigurationAnalysis {
@@ -51,17 +52,18 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
     return { issues, diagnostics };
   }
 
-  if ("mcpServers" in root && !isRecord(root.mcpServers)) {
+  const serverKey = "mcpServers" in root ? "mcpServers" : "servers";
+  if (serverKey in root && !isRecord(root[serverKey])) {
     diagnostics.push({
       code: "MCP_INVALID_SERVERS",
       message: "MCP server configuration must be an object; analysis is partial.",
-      range: rangeFromOffsets(path, source, findPropertyOffset(source, "mcpServers")),
+      range: rangeFromOffsets(path, source, findPropertyOffset(source, serverKey)),
     });
     return { issues, diagnostics };
   }
 
-  const servers = isRecord(root.mcpServers) ? root.mcpServers : {};
-  const serversRange = findObjectPropertyRange(source, "mcpServers");
+  const servers = isRecord(root[serverKey]) ? (root[serverKey] as Record<string, unknown>) : {};
+  const serversRange = findObjectPropertyRange(source, serverKey);
   let serverSearchOffset = serversRange?.start ?? 0;
   for (const [name, raw] of Object.entries(servers)) {
     const serverRange = serversRange
@@ -103,12 +105,12 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
       : [];
     const packageSpecs = packageFromInvocation(command, args);
     for (const packageSpec of packageSpecs.filter((spec) => !isVersionPinned(spec))) {
-      const serverSource = serverRange ? source.slice(serverRange.start, serverRange.end) : source;
       const localStart = findStringOffset(serverSource, packageSpec);
       const start = localStart + (serverRange?.start ?? 0);
       issues.push({
         code: "MCP_UNPINNED_PACKAGE",
         severity: "medium",
+        target: `server:${name}:pkg:${packageSpec}`,
         range: rangeFromOffsets(
           path,
           source,
@@ -121,12 +123,42 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
           "Pin the package to an exact version and review the server source and requested capabilities before use.",
       });
     }
+    const remoteUrl =
+      typeof raw.url === "string"
+        ? raw.url
+        : typeof raw.serverUrl === "string"
+          ? raw.serverUrl
+          : "";
+    if (isInsecureRemoteMcpUrl(remoteUrl)) {
+      const start = findStringOffset(serverSource, remoteUrl) + (serverRange?.start ?? 0);
+      issues.push({
+        code: "MCP_INSECURE_TRANSPORT",
+        severity: "high",
+        target: `server:${name}:insecure-url`,
+        range: rangeFromOffsets(path, source, start, start + remoteUrl.length),
+        message: "Remote MCP server uses unencrypted HTTP transport outside loopback addresses.",
+        remediation: "Switch the remote MCP endpoint to HTTPS with explicit authentication.",
+      });
+    }
+    for (const credField of findHardcodedCredentialFields(raw)) {
+      const start = findPropertyOffset(serverSource, credField) + (serverRange?.start ?? 0);
+      issues.push({
+        code: "MCP_HARDCODED_SECRET",
+        severity: "high",
+        target: `server:${name}:secret:${credField}`,
+        range: rangeFromOffsets(path, source, start, start + JSON.stringify(credField).length),
+        message:
+          "MCP server configuration embeds what appears to be a static credential or bearer token.",
+        remediation:
+          "Replace literal credentials with environment variable placeholders (e.g. ${ENV_VAR}).",
+      });
+    }
     if (raw.trust === true) {
-      const serverSource = serverRange ? source.slice(serverRange.start, serverRange.end) : source;
       const start = findKeyValueOffset(serverSource, "trust", "true") + (serverRange?.start ?? 0);
       issues.push({
         code: "MCP_UNRESTRICTED_TOOLS",
         severity: "high",
+        target: `server:${name}:trust`,
         range: rangeFromOffsets(path, source, start, start + 4),
         message:
           "MCP server is marked trusted, allowing its tools without normal per-tool confirmation.",
@@ -148,6 +180,9 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
     issues.push({
       code: "MCP_WILDCARD_ENABLEMENT",
       severity: "medium",
+      target: wildcardSetting
+        ? "setting:enableAllProjectMcpServers"
+        : "setting:enabledMcpjsonServers:*",
       range: rangeFromOffsets(path, source, start, start + (wildcardSetting ? 4 : 3)),
       message:
         "Project configuration enables all project MCP servers without per-server selection.",
@@ -157,25 +192,23 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
 
   const permissions = isRecord(root.permissions) ? root.permissions : {};
   const allow = Array.isArray(permissions.allow) ? permissions.allow : [];
-  const wildcardMcp = allow.some(
-    (value) => typeof value === "string" && /^mcp__[^\s]*\*$/.test(value),
+  const wildcardToolRule = allow.find(
+    (value): value is string =>
+      typeof value === "string" &&
+      (/^(?:mcp__[^\s]*|\*)$/.test(value) || /^(?:Bash|Shell)(?:\(\*\))?$/.test(value)),
   );
   const bypass = permissions.defaultMode === "bypassPermissions";
-  if (wildcardMcp || bypass) {
-    const needle = wildcardMcp
-      ? (allow.find(
-          (value) => typeof value === "string" && /^mcp__[^\s]*\*$/.test(value),
-        ) as string)
-      : "bypassPermissions";
+  if (wildcardToolRule || bypass) {
+    const needle = wildcardToolRule ?? "bypassPermissions";
     const start = findStringOffset(source, needle);
     issues.push({
       code: "MCP_UNRESTRICTED_TOOLS",
-      severity: bypass ? "high" : "medium",
+      severity: bypass || !wildcardToolRule?.startsWith("mcp__") ? "high" : "medium",
+      target: bypass ? "permissions:defaultMode:bypassPermissions" : `permissions:allow:${needle}`,
       range: rangeFromOffsets(path, source, start, start + JSON.stringify(needle).length),
       message:
-        "Configuration broadly pre-approves MCP tools or bypasses normal tool permission checks.",
-      remediation:
-        "Use explicit MCP tool allow rules and retain interactive approval for other tools.",
+        "Configuration broadly pre-approves MCP or shell tools or bypasses normal tool permission checks.",
+      remediation: "Use explicit tool allow rules and retain interactive approval for other tools.",
     });
   }
   return { issues, diagnostics };
@@ -183,7 +216,7 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
 
 function packageFromInvocation(command: string, args: string[]): string[] {
   const executable = command.split(/[\\/]/).at(-1)?.toLowerCase();
-  if (executable === "npx" || executable === "npx.cmd") {
+  if (executable === "npx" || executable === "npx.cmd" || executable === "bunx") {
     const explicitPackages = readPackageFlags(args);
     if (explicitPackages.length > 0) return explicitPackages;
     const candidate = args.find((arg) => !arg.startsWith("-"));
@@ -202,7 +235,88 @@ function packageFromInvocation(command: string, args: string[]): string[] {
     const candidate = candidates.find((arg) => !arg.startsWith("-"));
     return candidate ? [candidate] : [];
   }
+  if (
+    (executable === "pnpm" || executable === "yarn" || executable === "bun") &&
+    (args[0] === "dlx" || args[0] === "x")
+  ) {
+    const candidate = args.slice(1).find((arg) => !arg.startsWith("-"));
+    return candidate ? [candidate] : [];
+  }
+  if (executable === "uvx" || (executable === "uv" && args[0] === "tool" && args[1] === "run")) {
+    const remaining = executable === "uvx" ? args : args.slice(2);
+    const candidate = findPositionalWithValueFlags(remaining, [
+      "--from",
+      "--with",
+      "--python",
+      "-p",
+    ]);
+    return candidate ? [candidate] : [];
+  }
+  if (executable === "pipx" && args[0] === "run") {
+    const candidate = findPositionalWithValueFlags(args.slice(1), ["--spec", "--python"]);
+    return candidate ? [candidate] : [];
+  }
+  if (executable === "docker" && args[0] === "run") {
+    const image = findPositionalWithValueFlags(args.slice(1), [
+      "-e",
+      "--env",
+      "--env-file",
+      "-v",
+      "--volume",
+      "-p",
+      "--publish",
+      "--name",
+      "-w",
+      "--workdir",
+      "--network",
+      "-u",
+      "--user",
+      "--mount",
+    ]);
+    return image ? [`docker:${image}`] : [];
+  }
   return [];
+}
+
+function findPositionalWithValueFlags(args: string[], valueFlags: string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (valueFlags.includes(arg)) {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    return arg;
+  }
+  return undefined;
+}
+
+function isInsecureRemoteMcpUrl(url: string): boolean {
+  if (!/^http:\/\//i.test(url)) return false;
+  return !/^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(url);
+}
+
+function findHardcodedCredentialFields(raw: Record<string, unknown>): string[] {
+  const flagged: string[] = [];
+  const checkSection = (section: unknown) => {
+    if (!isRecord(section)) return;
+    for (const [key, value] of Object.entries(section)) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (!trimmed || /^\$\{[^}]+\}$/.test(trimmed)) continue;
+      if (
+        /^(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,})$/.test(
+          trimmed,
+        ) ||
+        (/(?:TOKEN|SECRET|API_KEY|PASSWORD|AUTHORIZATION)/i.test(key) && trimmed.length >= 20)
+      ) {
+        flagged.push(key);
+      }
+    }
+  };
+  checkSection(raw.env);
+  checkSection(raw.headers);
+  return flagged;
 }
 
 function readPackageFlags(args: string[]): string[] {
@@ -220,6 +334,17 @@ function readPackageFlags(args: string[]): string[] {
 }
 
 function isVersionPinned(spec: string): boolean {
+  if (spec.startsWith("docker:")) {
+    const image = spec.slice("docker:".length);
+    if (/@sha256:[a-f0-9]{64}$/i.test(image)) return true;
+    const lastColon = image.lastIndexOf(":");
+    const lastSlash = image.lastIndexOf("/");
+    if (lastColon <= lastSlash) return false;
+    const tag = image.slice(lastColon + 1);
+    return tag !== "latest" && VERSION.test(tag);
+  }
+  const eq = spec.indexOf("==");
+  if (eq > 0) return VERSION.test(spec.slice(eq + 2));
   const at = spec.lastIndexOf("@");
   return at > (spec.startsWith("@") ? spec.indexOf("/") : -1) && VERSION.test(spec.slice(at + 1));
 }

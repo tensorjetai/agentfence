@@ -50,7 +50,7 @@ export const builtInProfiles: ProviderProfile[] = [
     id: "anthropics/claude-code-action",
     provider: "claude",
     matches: ["anthropics/claude-code-action@*"],
-    promptInputs: ["prompt"],
+    promptInputs: ["prompt", "direct_prompt", "custom_instructions"],
     outputFields: ["execution_file", "branch_name"],
     capabilities: { shell: "configurable", network: true, repositoryWrite: "inferred-from-token" },
     permissionInputs: ["github_token"],
@@ -62,7 +62,7 @@ export const builtInProfiles: ProviderProfile[] = [
     id: "anthropics/claude-code-base-action",
     provider: "claude",
     matches: ["anthropics/claude-code-base-action@*"],
-    promptInputs: ["prompt", "prompt_file"],
+    promptInputs: ["prompt", "prompt_file", "direct_prompt", "custom_instructions"],
     outputFields: ["execution_file"],
     capabilities: { shell: "configurable", network: true, repositoryWrite: "inferred-from-token" },
     permissionInputs: ["github_token"],
@@ -161,11 +161,58 @@ export class ProviderRegistry {
 }
 
 function hasShellCapability(profile: ProviderProfile, step: WorkflowStep): boolean {
-  if (profile.provider !== "actions-ai-inference") return Boolean(profile.capabilities.shell);
-  const allowedTools = step.with["copilot-allow-tools"] ?? "";
-  if (!allowedTools.trim()) return false;
-  if (parseExpressions(allowedTools).references.length > 0) return true;
-  return /(?:^|,)\s*shell\s*(?:\(|,|$)/i.test(allowedTools);
+  if (profile.provider === "actions-ai-inference") {
+    const allowedTools = step.with["copilot-allow-tools"] ?? "";
+    if (!allowedTools.trim()) return false;
+    if (parseExpressions(allowedTools).references.length > 0) return true;
+    return /(?:^|,)\s*shell\s*(?:\(|,|$)/i.test(allowedTools);
+  }
+  if (profile.provider === "claude") {
+    const claudeArgs = step.with["claude_args"] ?? "";
+    if (
+      parseExpressions(claudeArgs).references.length > 0 ||
+      /--dangerously-skip-permissions|--allowedTools[^,\n]*Bash/i.test(claudeArgs)
+    ) {
+      return true;
+    }
+    const allowed = (step.with["allowed_tools"] ?? step.with["allowed-tools"] ?? "").trim();
+    if (allowed) {
+      if (parseExpressions(allowed).references.length > 0) return true;
+      const tools = allowed
+        .split(/[\s,]+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      return tools.some((tool) =>
+        /^(?:\*|bash(?:\(|$)|shell(?:\(|$)|write|edit|multiedit)/i.test(tool),
+      );
+    }
+    const disallowed = (
+      step.with["disallowed_tools"] ??
+      step.with["disallowed-tools"] ??
+      ""
+    ).trim();
+    if (
+      disallowed &&
+      parseExpressions(disallowed).references.length === 0 &&
+      /(?:^|[\s,])bash(?:\(|,|[\s]|$)/i.test(disallowed)
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (profile.provider === "codex") {
+    const codexArgs = step.with["codex-args"] ?? "";
+    if (
+      /--dangerously-bypass-approvals-and-sandbox|--yolo/i.test(codexArgs) ||
+      parseExpressions(codexArgs).references.length > 0
+    ) {
+      return true;
+    }
+    const sandbox = (step.with["sandbox"] ?? "").trim().toLowerCase();
+    if (sandbox === "read-only") return false;
+    return Boolean(profile.capabilities.shell);
+  }
+  return Boolean(profile.capabilities.shell);
 }
 
 export function hasImplicitWriteActorGuard(step: WorkflowStep): boolean {

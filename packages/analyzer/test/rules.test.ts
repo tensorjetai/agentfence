@@ -753,6 +753,107 @@ jobs:
     expect(finding?.suppressed).toBeUndefined();
     expect(finding?.range.start.line).toBe(5);
   });
+
+  it("avoids false-positive AF001 when Claude or Codex explicitly restricts shell/write tools", () => {
+    const readOnlyClaude = scan(`on: issue_comment
+permissions:
+  contents: read
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER'
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          allowed_tools: Read,Grep,Glob
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(readOnlyClaude.findings.some((item) => item.ruleId === "AF001")).toBe(false);
+
+    const bashClaude = scan(`on: issue_comment
+permissions:
+  contents: read
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER'
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          allowed_tools: Read,Bash(git:*)
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(bashClaude.findings.some((item) => item.ruleId === "AF001")).toBe(true);
+
+    const readOnlyCodex = scan(`on: pull_request
+permissions:
+  contents: read
+jobs:
+  review:
+    steps:
+      - uses: openai/codex-action@v1
+        with:
+          sandbox: read-only
+          prompt: \${{ github.event.pull_request.body }}
+`);
+    expect(readOnlyCodex.findings.some((item) => item.ruleId === "AF001")).toBe(false);
+  });
+
+  it("rejects negated or OR-bypassed AF004 trust gates and detects pull_request_target PR merge refs", () => {
+    const bypassedGate = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER' || true
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: hello
+`);
+    expect(bypassedGate.findings.some((item) => item.ruleId === "AF004")).toBe(true);
+
+    const compoundedSafe = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER')
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: hello
+`);
+    expect(compoundedSafe.findings.some((item) => item.ruleId === "AF004")).toBe(false);
+
+    expectRules(
+      `on: pull_request_target
+permissions:
+  contents: write
+jobs:
+  review:
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/\${{ github.event.pull_request.number }}/merge
+`,
+      ["AF003"],
+    );
+  });
+
+  it("tracks toJSON(secrets), commit messages, and direct_prompt taint paths", () => {
+    expectRules(
+      `on: push
+permissions:
+  contents: read
+jobs:
+  triage:
+    env:
+      LEAK: \${{ toJSON(secrets) }}
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          direct_prompt: \${{ github.event.head_commit.message }}
+`,
+      ["AF001", "AF006"],
+    );
+  });
 });
 
 function expectRules(source: string, expected: string[]): void {

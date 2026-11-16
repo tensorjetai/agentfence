@@ -53,8 +53,10 @@ export function implicitPromptReferences(
   const paths = new Set<string>();
   if (
     step.providerId === "anthropics/claude-code-action" &&
-    step.uses === "anthropics/claude-code-action@v1" &&
-    (step.with.prompt ?? "").trim() === ""
+    typeof step.uses === "string" &&
+    /^anthropics\/claude-code-action@(?:v1(?:\.\d+\.\d+)?|[a-f0-9]{40})$/i.test(step.uses) &&
+    (step.with.prompt ?? "").trim() === "" &&
+    (step.with.direct_prompt ?? "").trim() === ""
   ) {
     for (const trigger of workflow.triggers) {
       for (const path of claudeInteractiveEvents[trigger.event] ?? []) paths.add(path);

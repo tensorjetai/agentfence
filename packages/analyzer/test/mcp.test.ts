@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyzeMcpConfiguration } from "../src/configuration/mcp.js";
+import { scanWorkflow } from "../src/index.js";
 
 describe("MCP configuration analyzer", () => {
   it("flags unpinned package launchers without exposing configured values", () => {
@@ -161,5 +162,56 @@ describe("MCP configuration analyzer", () => {
     expect(analyzeMcpConfiguration(".mcp.json", deep).diagnostics[0]?.code).toBe(
       "MCP_CONFIG_LIMIT",
     );
+  });
+
+  it("flags uvx/bunx/pnpm dlx/docker unpinned runners, insecure http URLs, hardcoded tokens, and Bash(*)", () => {
+    const result = analyzeMcpConfiguration(
+      ".vscode/mcp.json",
+      JSON.stringify({
+        servers: {
+          py: { command: "uvx", args: ["mcp-server-sqlite"] },
+          dlx: { command: "pnpm", args: ["dlx", "@acme/mcp"] },
+          container: { command: "docker", args: ["run", "--rm", "-i", "ghcr.io/acme/mcp:latest"] },
+          remote: {
+            url: "http://mcp.internal.example.com/sse",
+            headers: { Authorization: "Bearer ghp_1234567890abcdef1234567890" },
+          },
+        },
+        permissions: { allow: ["Bash(*)"] },
+      }),
+    );
+    const codes = result.issues.map(({ code }) => code);
+    expect(codes.filter((c) => c === "MCP_UNPINNED_PACKAGE")).toHaveLength(3);
+    expect(codes).toContain("MCP_INSECURE_TRANSPORT");
+    expect(codes).toContain("MCP_HARDCODED_SECRET");
+    expect(codes).toContain("MCP_UNRESTRICTED_TOOLS");
+    expect(JSON.stringify(result)).not.toContain("ghp_1234567890abcdef1234567890");
+
+    const pinned = analyzeMcpConfiguration(
+      ".mcp.json",
+      JSON.stringify({
+        mcpServers: {
+          py: { command: "uvx", args: ["mcp-server-sqlite==1.2.3"] },
+          container: { command: "docker", args: ["run", "--rm", "ghcr.io/acme/mcp:1.2.3"] },
+          local: {
+            url: "http://localhost:3333/sse",
+            env: { TOKEN: "${MY_TOKEN}" },
+          },
+        },
+      }),
+    );
+    expect(pinned.issues).toEqual([]);
+  });
+
+  it("keeps AF007 fingerprints stable across whitespace formatting shifts in .mcp.json", () => {
+    const compact = JSON.stringify({ mcpServers: { s: { command: "npx", args: ["foo-mcp"] } } });
+    const reformatted = JSON.stringify(
+      { _note: "formatted", mcpServers: { s: { command: "npx", args: ["foo-mcp"] } } },
+      null,
+      2,
+    );
+    const first = scanWorkflow({ path: ".mcp.json", source: compact });
+    const second = scanWorkflow({ path: ".mcp.json", source: reformatted });
+    expect(first.findings[0]?.fingerprint).toBe(second.findings[0]?.fingerprint);
   });
 });

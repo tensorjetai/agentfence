@@ -98,14 +98,23 @@ function extractReferences(body: string, offset: number): ParsedExpressions["ref
 
 export function taintForReference(path: string) {
   if (
-    /^github\.event\.(?:issue|pull_request|discussion)\.(?:body|title)$/.test(path) ||
-    /^github\.event\.(?:comment|review|review_comment)\.body$/.test(path)
+    path === "github.event" ||
+    /^github\.event\.(?:issue|pull_request|discussion)\.(?:body|title|head\.label|head\.ref|user\.login)$/.test(
+      path,
+    ) ||
+    /^github\.event\.(?:comment|review|review_comment)\.(?:body|user\.login)$/.test(path) ||
+    /^github\.event\.(?:head_commit|commits\.\d+)\.(?:message|author\.(?:name|email))$/.test(
+      path,
+    ) ||
+    /^github\.event\.workflow_run\.(?:head_branch|display_title)$/.test(path)
   ) {
     return "UNTRUSTED_EVENT_TEXT" as const;
   }
-  if (/^github\.(head_ref|ref)|\.head\.(ref|sha)/.test(path)) return "UNTRUSTED_REF" as const;
+  if (/^github\.(?:head_ref|ref_name|ref)|\.head\.(?:ref|sha)/.test(path)) {
+    return "UNTRUSTED_REF" as const;
+  }
   if (/^(?:inputs|github\.event\.inputs)\./.test(path)) return "WORKFLOW_DISPATCH_INPUT" as const;
-  if (/^secrets\./.test(path)) return "SECRET_REFERENCE" as const;
+  if (path === "secrets" || path.startsWith("secrets.")) return "SECRET_REFERENCE" as const;
   if (/^(steps|jobs|needs)\..*\.outputs\./.test(path)) return "AGENT_OUTPUT" as const;
   return undefined;
 }

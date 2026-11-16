@@ -104,7 +104,7 @@ jobs:
           fi
 
           if [[ "$DRY_RUN" == "true" ]]; then
-            pnpm publish:npm --skip-build -- --dry-run
+            pnpm publish:npm --skip-build --pack-only
           else
             pnpm publish:npm --skip-build -- --provenance
           fi

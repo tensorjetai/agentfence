@@ -1,0 +1,110 @@
+name: Publish AgentFence OSS npm packages
+
+# Supports BOTH zero-secret npm Trusted Publishing (OIDC, recommended) and
+# optional NPM_TOKEN automation/granular secret fallback (Bypass 2FA).
+#
+# To enable zero-2FA publishing via OIDC on npmjs.com:
+#   Package Settings -> Trusted Publisher -> GitHub Actions:
+#     Organization/User: tensorjetai
+#     Repository:        agentfence
+#     Workflow filename: publish-npm.yml
+# Or set repository secret NPM_TOKEN with a Bypass-2FA Granular Access Token.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Stage packages and run npm publish --dry-run (skip live publish)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: agentfence-oss-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Ensure npm supports OIDC Trusted Publishing
+        run: |
+          set -euo pipefail
+          npm_version="$(npm --version)"
+          echo "Runner npm version: $npm_version"
+          node -e '
+            const [maj, min, patch] = process.argv[1].split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
+            process.exit(ok ? 0 : 1);
+          ' "$npm_version" || npm install -g npm@latest
+
+      - name: Validate release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_version="${REF_NAME#v}"
+          if [[ "$tag_version" == "$REF_NAME" || ! "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Expected a v<semver> tag (e.g. v0.1.4), received: $REF_NAME" >&2
+            exit 1
+          fi
+          pkg_version="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("packages/analyzer/package.json", "utf8")).version)')"
+          if [[ "$tag_version" != "$pkg_version" ]]; then
+            echo "Tag version $tag_version does not match packages/analyzer/package.json version $pkg_version" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify lint, typecheck, tests, build, and benchmark
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm build
+          pnpm benchmark:accuracy
+
+      - name: Publish agentfence-cli and @tensorjetai/agentfence
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$NPM_TOKEN" ]]; then
+            npmrc="$RUNNER_TEMP/.npmrc"
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$npmrc"
+            chmod 600 "$npmrc"
+            export NPM_CONFIG_USERCONFIG="$npmrc"
+          fi
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            pnpm publish:npm --skip-build -- --dry-run
+          else
+            pnpm publish:npm --skip-build -- --provenance
+          fi

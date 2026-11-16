@@ -107,6 +107,25 @@ async function main() {
   const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const analyzerDir = join(rootDir, "packages", "analyzer");
 
+  const isLocalLivePublish =
+    !packOnly && !npmFlags.includes("--dry-run") && !process.env.CI && !process.env.GITHUB_ACTIONS;
+  if (isLocalLivePublish) {
+    try {
+      const user = execFileSync("npm", ["whoami"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+      console.log(`Authenticated on npm as: ${user}`);
+    } catch {
+      console.error(
+        "Not logged in to npm (npm whoami failed).\n" +
+          "To publish without local 2FA/login, push a v<version> tag to GitHub (triggers publish-npm.yml),\n" +
+          "or run 'npm login' locally first.",
+      );
+      process.exit(1);
+    }
+  }
+
   if (!skipBuild) {
     execFileSync("pnpm", ["--filter", "@agentfence/analyzer...", "build"], {
       cwd: rootDir,

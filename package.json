@@ -19,6 +19,7 @@
     "benchmark:analyzer": "tsx packages/analyzer/test/benchmark.ts",
     "benchmark:accuracy": "tsx packages/analyzer/test/benchmark-cli.ts",
     "evaluate:real-world": "tsx packages/analyzer/test/real-world/runner.ts",
+    "version:bump": "node scripts/bump-version.mjs",
     "publish:npm": "node scripts/publish-npm.mjs"
   },
   "devDependencies": {

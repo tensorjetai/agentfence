@@ -810,11 +810,23 @@ jobs:
 `);
     expect(bypassedGate.findings.some((item) => item.ruleId === "AF004")).toBe(true);
 
+    const negatedGate = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: !(github.event.comment.author_association == 'OWNER')
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: hello
+`);
+    expect(negatedGate.findings.some((item) => item.ruleId === "AF004")).toBe(true);
+
     const compoundedSafe = scan(`on: issue_comment
 permissions: {}
 jobs:
   review:
-    if: (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER')
+    if: (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER') && !github.event.comment.user.bot
     steps:
       - uses: anthropics/claude-code-action@v1
         with:

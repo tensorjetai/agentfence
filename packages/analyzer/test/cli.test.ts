@@ -58,7 +58,7 @@ describe("local CLI", () => {
   });
 
   it("prints the package version and exits successfully", async () => {
-    expect(await runCli(["--version"])).toEqual({ exitCode: 0, output: "0.1.0\n" });
+    expect(await runCli(["--version"])).toEqual({ exitCode: 0, output: "0.1.3\n" });
   });
 
   it("escapes terminal control characters in text output", async () => {

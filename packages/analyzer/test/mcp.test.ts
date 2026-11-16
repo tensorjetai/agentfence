@@ -192,7 +192,10 @@ describe("MCP configuration analyzer", () => {
       JSON.stringify({
         mcpServers: {
           py: { command: "uvx", args: ["mcp-server-sqlite==1.2.3"] },
-          container: { command: "docker", args: ["run", "--rm", "ghcr.io/acme/mcp:1.2.3"] },
+          container: {
+            command: "docker",
+            args: ["run", "--rm", "--platform", "linux/amd64", "ghcr.io/acme/mcp:1.2.3"],
+          },
           local: {
             url: "http://localhost:3333/sse",
             env: { TOKEN: "${MY_TOKEN}" },

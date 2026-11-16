@@ -307,8 +307,8 @@ function hasSecretReference(value: string): boolean {
   );
 }
 
-function splitTopLevelOrClauses(condition: string): string[] {
-  const clauses: string[] = [];
+function splitTopLevelBoolean(condition: string, operator: "||" | "&&"): string[] {
+  const parts: string[] = [];
   let depth = 0;
   let quote: string | undefined;
   let start = 0;
@@ -322,38 +322,42 @@ function splitTopLevelOrClauses(condition: string): string[] {
     if (ch === "'" || ch === '"') quote = ch;
     else if (ch === "(") depth += 1;
     else if (ch === ")") depth = Math.max(0, depth - 1);
-    else if (depth === 0 && ch === "|" && condition[i + 1] === "|") {
-      clauses.push(condition.slice(start, i).trim());
+    else if (depth === 0 && ch === operator[0] && condition[i + 1] === operator[1]) {
+      parts.push(condition.slice(start, i).trim());
       i += 1;
       start = i + 1;
     }
   }
-  clauses.push(condition.slice(start).trim());
-  return clauses.filter(Boolean);
+  parts.push(condition.slice(start).trim());
+  return parts.filter(Boolean);
+}
+
+function factorEnforcesTrustGate(factor: string): boolean {
+  const trimmed = factor.trim();
+  if (!trimmed || trimmed.startsWith("!")) return false;
+  if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+    return expressionEnforcesTrustGate(trimmed.slice(1, -1));
+  }
+  const hasAssociation =
+    /^(?:github\.event\.[^&\s]*\.)?author_association\s*==\s*['"](?:OWNER|MEMBER|COLLABORATOR)['"]$/i.test(
+      trimmed,
+    ) ||
+    /^contains\([^)]*(?:OWNER|MEMBER|COLLABORATOR)[^)]*author_association[^)]*\)$/i.test(trimmed);
+  const hasFixedActor = /^github\.actor\s*==\s*['"][A-Za-z0-9](?:[A-Za-z0-9-]{0,38})['"]$/i.test(
+    trimmed,
+  );
+  return hasAssociation || hasFixedActor;
 }
 
 function clauseEnforcesTrustGate(clause: string): boolean {
-  const unwrapped =
-    clause.startsWith("(") && clause.endsWith(")") ? clause.slice(1, -1).trim() : clause;
-  if (unwrapped !== clause && splitTopLevelOrClauses(unwrapped).length > 1) {
-    return splitTopLevelOrClauses(unwrapped).every(clauseEnforcesTrustGate);
-  }
-  const hasAssociation =
-    /(?:^|[\s&(])(?:github\.event\.[^&\s]*\.)?author_association\s*==\s*['"](?:OWNER|MEMBER|COLLABORATOR)['"]/i.test(
-      unwrapped,
-    ) ||
-    /(?:^|[\s&(])contains\([^)]*(?:OWNER|MEMBER|COLLABORATOR)[^)]*author_association[^)]*\)/i.test(
-      unwrapped,
-    );
-  const hasFixedActor =
-    /(?:^|[\s&(])github\.actor\s*==\s*['"][A-Za-z0-9](?:[A-Za-z0-9-]{0,38})['"]/i.test(unwrapped);
-  return hasAssociation || hasFixedActor;
+  const factors = splitTopLevelBoolean(clause, "&&");
+  return factors.length > 0 && factors.some(factorEnforcesTrustGate);
 }
 
 function expressionEnforcesTrustGate(condition: string | undefined): boolean {
   const trimmed = (condition ?? "").trim();
   if (!trimmed) return false;
-  const clauses = splitTopLevelOrClauses(trimmed);
+  const clauses = splitTopLevelBoolean(trimmed, "||");
   return clauses.length > 0 && clauses.every(clauseEnforcesTrustGate);
 }
 

@@ -105,7 +105,10 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
       : [];
     const packageSpecs = packageFromInvocation(command, args);
     for (const packageSpec of packageSpecs.filter((spec) => !isVersionPinned(spec))) {
-      const localStart = findStringOffset(serverSource, packageSpec);
+      const displaySpec = packageSpec.startsWith("docker:")
+        ? packageSpec.slice("docker:".length)
+        : packageSpec;
+      const localStart = findStringOffset(serverSource, displaySpec);
       const start = localStart + (serverRange?.start ?? 0);
       issues.push({
         code: "MCP_UNPINNED_PACKAGE",
@@ -115,7 +118,7 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
           path,
           source,
           start,
-          start + Math.max(1, JSON.stringify(packageSpec).length),
+          start + Math.max(1, JSON.stringify(displaySpec).length),
         ),
         message:
           "MCP server is launched through a package runner without an exact package version.",
@@ -272,6 +275,17 @@ function packageFromInvocation(command: string, args: string[]): string[] {
       "-u",
       "--user",
       "--mount",
+      "--platform",
+      "--entrypoint",
+      "--label",
+      "-l",
+      "-h",
+      "--hostname",
+      "--add-host",
+      "--cap-add",
+      "--cap-drop",
+      "--security-opt",
+      "--restart",
     ]);
     return image ? [`docker:${image}`] : [];
   }

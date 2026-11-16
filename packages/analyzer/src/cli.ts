@@ -12,6 +12,7 @@ const MAX_INPUT_BYTES = 1_000_000;
 const MAX_REPOSITORY_BYTES = 10_000_000;
 const MAX_PREPARED_WORKFLOWS = 2_000;
 const POLICY_PATH = ".agentfence.yml";
+const SCANNER_VERSION = "0.1.3";
 
 type Diagnostic = { path: string; code: string; message: string };
 
@@ -20,7 +21,7 @@ export async function runCli(
   args: string[],
   cwd = process.cwd(),
 ): Promise<{ exitCode: number; output: string }> {
-  if (args.includes("--version")) return { exitCode: 0, output: "0.1.0\n" };
+  if (args.includes("--version")) return { exitCode: 0, output: `${SCANNER_VERSION}\n` };
   if (args.includes("--help")) {
     return {
       exitCode: 0,
@@ -301,7 +302,7 @@ export async function runCli(
           $schema: "https://json.schemastore.org/sarif-2.1.0.json",
           runs: [
             {
-              tool: { driver: { name: "AgentFence", version: "0.1.0" } },
+              tool: { driver: { name: "AgentFence", version: SCANNER_VERSION } },
               results: findings.map((finding) => ({
                 ruleId: finding.ruleId,
                 level: ["critical", "high"].includes(finding.severity) ? "error" : "warning",

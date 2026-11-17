@@ -2,7 +2,7 @@
 
 > Deterministic static security analyzer for AI coding agents, MCP configs, and GitHub Actions workflows.
 
-AgentFence parses GitHub Actions workflows (`.github/workflows/*.yml`), GitHub Agentic Workflow Markdown (`gh-aw`), and committed agent/MCP configurations (`.mcp.json`, `.claude/settings.json`, `.gemini/settings.json`), traces untrusted input flows across `env:` and step outputs, and emits actionable SARIF 2.1.0, JSON, or terminal findings (`AF001`–`AF007`).
+AgentFence parses GitHub Actions workflows (`.github/workflows/*.yml`), GitHub Agentic Workflow Markdown (`gh-aw`), and committed agent/MCP configurations (`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, `.claude/settings.json`, `.gemini/settings.json`), traces untrusted input flows across `env:` and step outputs, and emits actionable SARIF 2.1.0, JSON, or terminal findings (`AF001`–`AF007`).
 
 [![npm version](https://img.shields.io/npm/v/agentfence-cli.svg)](https://www.npmjs.com/package/agentfence-cli)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -46,9 +46,9 @@ agentfence --format text .
 Teams often assume checking for `pull_request_target` or direct `${{ github.event.issue.body }}` inside a `prompt:` input catches prompt injection in CI. In practice, real workflows break naive linters in several ways:
 
 1. **`env:` & Step-Output Indirection (`AF001`, `AF002`)**: Untrusted PR/issue fields flow through intermediate job/step `env:` variables or `steps.<id>.outputs.*` values before reaching an agent prompt or downstream shell `run:` step (Prompt-to-Script).
-2. **Untrusted Checkouts in Privileged Jobs (`AF003`)**: Checking out a contributor PR head ref (`github.event.pull_request.head.*` / `github.head_ref`) inside a job with write scopes or repository secrets lets repository files/configs influence privileged execution.
-3. **Implicit Event Ingestion (`AF001`)**: Documented no-prompt interactive triggers on `anthropics/claude-code-action@v1` and triage flows on `google-github-actions/run-gemini-cli` ingest issue/PR/comment text even when no explicit `prompt:` string mentions `github.event`.
-4. **Risky Committed MCP Server Configs (`AF007`)**: `.mcp.json`, `.claude/settings.json`, and `.gemini/settings.json` can invoke unpinned `npx` / `npm exec` packages or grant broad `trust: true` / wildcard `mcp__*` approvals without running any workflow at all.
+2. **Untrusted Checkouts in Privileged Jobs (`AF003`)**: Checking out a contributor PR head ref (`pull_request`, `github.event.pull_request.head.*` / `github.head_ref`, or `refs/pull/.../merge` under `pull_request_target`) inside a job with write scopes or repository secrets lets repository files/configs influence privileged execution.
+3. **Implicit Event Ingestion (`AF001`)**: Documented no-prompt interactive triggers on `anthropics/claude-code-action` (`@v1` or pinned commit SHA) and triage flows on `google-github-actions/run-gemini-cli` ingest issue/PR/comment text even when no explicit `prompt:` string mentions `github.event`, while explicit read-only tool limits (`allowed_tools`, Codex `sandbox: read-only`) avoid false positives.
+4. **Risky Committed MCP Server Configs (`AF007`)**: `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, `.claude/settings.json`, and `.gemini/settings.json` can invoke unpinned package/image runners (`npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `pipx`, `docker run`), connect to cleartext `http://` endpoints, embed static credentials, or grant `trust: true` / `mcp__*` / `Bash(*)` approvals without running any workflow at all.
 
 ---
 
@@ -120,22 +120,22 @@ Every suppression requires a non-empty reason. Expired `.agentfence.yml` suppres
 
 ## Rule Catalog (`AF001`–`AF007`)
 
-| Rule    | Severity          | Blocks by default | Condition                                                                                                                                | Primary Remediation                                                     |
-| :------ | :---------------- | :---------------- | :--------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------- |
-| `AF001` | **Critical**      | Yes               | Untrusted event or repository data reaches a privileged agent prompt.                                                                    | Add a fail-closed trust gate or split read/write jobs.                  |
-| `AF002` | **Critical**      | Yes               | Recognized AI agent output flows into shell execution (`run:`).                                                                          | Validate strict structured outputs and map to allowlisted commands.     |
-| `AF003` | **Critical**      | Yes               | Contributor-controlled `actions/checkout` ref enters a job with write permissions or secrets.                                            | Check out or analyze untrusted PR code in an isolated unprivileged job. |
-| `AF004` | **High**          | No                | Public event trigger starts an agent without an actor, `author_association`, label, approval, or environment gate.                       | Enforce a fail-closed trust condition on job/step execution.            |
-| `AF005` | **High**          | No                | Agent job holds broad write `permissions` (emits suggested YAML diff).                                                                   | Default to `permissions: {}` and grant minimal job scopes.              |
-| `AF006` | **Critical**      | Yes               | Repository secret is exposed in an agent context influenced by untrusted input.                                                          | Move credential access to a separate maintainer-approved stage.         |
-| `AF007` | **Medium / High** | No                | `.mcp.json` or `.{claude,gemini}/settings.json` invokes unpinned `npx`/`npm exec` packages or grants `trust: true` / `mcp__*` wildcards. | Pin exact reviewed package versions and narrow server/tool approvals.   |
+| Rule    | Severity          | Blocks by default | Condition                                                                                                                                                                                                                                           | Primary Remediation                                                                          |
+| :------ | :---------------- | :---------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------- |
+| `AF001` | **Critical**      | Yes               | Untrusted event or repository data reaches a privileged agent prompt.                                                                                                                                                                               | Add a fail-closed trust gate or split read/write jobs.                                       |
+| `AF002` | **Critical**      | Yes               | Recognized AI agent output flows into shell execution (`run:`).                                                                                                                                                                                     | Validate strict structured outputs and map to allowlisted commands.                          |
+| `AF003` | **Critical**      | Yes               | Contributor-controlled `actions/checkout` ref (`pull_request`, `head_ref`, or `pull_request_target` PR refs) enters a job with write permissions or secrets.                                                                                        | Check out or analyze untrusted PR code in an isolated unprivileged job.                      |
+| `AF004` | **High**          | No                | Public event trigger starts an agent without a fail-closed `author_association`, `github.actor`, or verified provider write-actor gate.                                                                                                             | Enforce a fail-closed trust condition on job/step execution.                                 |
+| `AF005` | **High**          | No                | Agent job holds broad write `permissions` (emits suggested YAML diff).                                                                                                                                                                              | Default to `permissions: {}` and grant minimal job scopes.                                   |
+| `AF006` | **Critical**      | Yes               | Repository secret (`secrets.*` or `toJSON(secrets)`) is exposed in an agent context influenced by untrusted input.                                                                                                                                  | Move credential access to a separate maintainer-approved stage.                              |
+| `AF007` | **Medium / High** | No                | `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, or `.{claude,gemini}/settings.json` uses unpinned runners (`npx`/`uvx`/`bunx`/`pnpm dlx`/`docker`), cleartext `http://`, embedded credentials, `trust: true`, or `mcp__*`/`Bash(*)` wildcards. | Pin exact reviewed packages/images, use HTTPS + env placeholders, and narrow tool approvals. |
 
 ---
 
 ## Supported Providers & Target Files
 
 - **Modeled Agent Providers:** `anthropics/claude-code-action`, `anthropics/claude-code-base-action`, `openai/codex-action`, `google-github-actions/run-gemini-cli`, `actions/ai-inference`, and `github/gh-aw`.
-- **Analyzed Files:** `.github/workflows/*.yml` / `*.yaml`, local reusable workflows, local composite `action.yml` dependencies, `gh-aw` workflow Markdown, `.mcp.json`, `.claude/settings.json`, and `.gemini/settings.json`.
+- **Analyzed Files:** `.github/workflows/*.yml` / `*.yaml`, local reusable workflows, local composite `action.yml` dependencies, `gh-aw` workflow Markdown, `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, `.claude/settings.json`, and `.gemini/settings.json`.
 - **Instruction Files:** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and `.github/agents/*.md` are inventoried as context; their prose is not executed or parsed for prompt safety.
 
 ---

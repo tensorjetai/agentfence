@@ -35,4 +35,12 @@ describe("expression parser lexical handling", () => {
       "malformed-expression",
     );
   });
+
+  it("extracts numeric bracket indices such as commits[0].message", () => {
+    const result = parseExpressions("${{ github.event.commits[0].message }}");
+    expect(result.references.map((reference) => reference.path)).toEqual([
+      "github.event.commits.0.message",
+    ]);
+    expect(result.unsupported).toEqual([]);
+  });
 });

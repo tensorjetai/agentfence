@@ -217,4 +217,98 @@ describe("MCP configuration analyzer", () => {
     const second = scanWorkflow({ path: ".mcp.json", source: reformatted });
     expect(first.findings[0]?.fingerprint).toBe(second.findings[0]?.fingerprint);
   });
+
+  it("detects unpinned packages through sh/bash/env wrappers, dlx flags, and npx value flags", () => {
+    const wrappers = analyzeMcpConfiguration(
+      ".mcp.json",
+      JSON.stringify({
+        mcpServers: {
+          shWrapped: { command: "sh", args: ["-c", "npx -y @acme/sh-mcp"] },
+          bashWrapped: {
+            command: "/bin/bash",
+            args: ["-lc", "FOO=1 exec pnpm dlx @acme/bash-mcp"],
+          },
+          envWrapped: {
+            command: "/usr/bin/env",
+            args: ["-u", "DEBUG", "VAR=1", "bunx", "@acme/env-mcp"],
+          },
+          pnpmFlags: { command: "pnpm", args: ["-C", "/app", "dlx", "@acme/pnpm-mcp"] },
+          yarnFlags: { command: "yarn", args: ["--cwd", "/app", "dlx", "@acme/yarn-mcp"] },
+          bunFlags: {
+            command: "bun",
+            args: ["--cwd", "/app", "--env-file", ".env", "x", "@acme/bun-mcp"],
+          },
+          npxValueFlag: { command: "npx", args: ["--cache", "/tmp/c@1.0.0", "@acme/npx-mcp"] },
+          npmValueFlag: {
+            command: "npm",
+            args: ["--prefix", "/app", "exec", "--cache", "/tmp/c@1.0.0", "@acme/npm-mcp"],
+          },
+        },
+      }),
+    );
+    const unpinnedTargets = wrappers.issues
+      .filter((issue) => issue.code === "MCP_UNPINNED_PACKAGE")
+      .map((issue) => issue.target);
+    expect(unpinnedTargets).toEqual([
+      "server:shWrapped:pkg:@acme/sh-mcp",
+      "server:bashWrapped:pkg:@acme/bash-mcp",
+      "server:envWrapped:pkg:@acme/env-mcp",
+      "server:pnpmFlags:pkg:@acme/pnpm-mcp",
+      "server:yarnFlags:pkg:@acme/yarn-mcp",
+      "server:bunFlags:pkg:@acme/bun-mcp",
+      "server:npxValueFlag:pkg:@acme/npx-mcp",
+      "server:npmValueFlag:pkg:@acme/npm-mcp",
+    ]);
+
+    const pinnedWrapper = analyzeMcpConfiguration(
+      ".mcp.json",
+      JSON.stringify({
+        mcpServers: {
+          safe: { command: "sh", args: ["-c", "env FOO=1 npx --cache /tmp/c @acme/safe@1.2.3"] },
+        },
+      }),
+    );
+    expect(pinnedWrapper.issues).toEqual([]);
+  });
+
+  it("flags hardcoded credentials in args and url while allowing env placeholders", () => {
+    const result = analyzeMcpConfiguration(
+      ".mcp.json",
+      JSON.stringify({
+        mcpServers: {
+          argFlag: {
+            command: "node",
+            args: ["server.js", "--token", "ghp_1234567890abcdef1234567890"],
+          },
+          argEquals: {
+            command: "node",
+            args: ["server.js", "--api-key=supersecretapikeyvalue123"],
+          },
+          argHeader: {
+            command: "node",
+            args: ["server.js", "--header", "Authorization: Bearer my-static-bearer-token-123"],
+          },
+          urlUserinfo: { url: "https://user:secretpass@mcp.example.com/sse" },
+          urlQuery: { url: "https://mcp.example.com/sse?api_key=supersecretapikeyvalue123" },
+          safeArgsAndUrl: {
+            url: "https://${MCP_USER}:${MCP_PASS}@mcp.example.com/sse?token=${MCP_TOKEN}",
+            args: ["--token", "${MY_TOKEN}", "--api-key=${MY_KEY}"],
+          },
+        },
+      }),
+    );
+    const secretTargets = result.issues
+      .filter((issue) => issue.code === "MCP_HARDCODED_SECRET")
+      .map((issue) => issue.target);
+    expect(secretTargets).toEqual([
+      "server:argFlag:secret:args",
+      "server:argEquals:secret:args",
+      "server:argHeader:secret:args",
+      "server:urlUserinfo:secret:url",
+      "server:urlQuery:secret:url",
+    ]);
+    expect(JSON.stringify(result)).not.toContain("ghp_1234567890abcdef1234567890");
+    expect(JSON.stringify(result)).not.toContain("supersecretapikeyvalue123");
+    expect(JSON.stringify(result)).not.toContain("secretpass");
+  });
 });

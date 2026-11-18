@@ -46,6 +46,7 @@ export type PermissionMap = Record<string, "read" | "write" | "none"> | "read-al
 export interface WorkflowInvocation {
   callerPath: string;
   callerJobId: string;
+  callerIf?: string | undefined;
   inputs: Record<string, string>;
   inputReferences: Record<string, ExpressionReference[]>;
   secrets: Record<string, string>;

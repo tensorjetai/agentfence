@@ -1,6 +1,6 @@
 {
   "name": "@agentfence/analyzer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Deterministic static security analyzer for AI agents, MCP servers, and GitHub Actions workflows",
   "license": "Apache-2.0",
   "type": "module",

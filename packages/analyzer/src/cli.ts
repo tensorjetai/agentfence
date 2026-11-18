@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { parsePolicy } from "@agentfence/policy";
 import { resolveReusableWorkflows } from "./reusable/index.js";
 import { scanPreparedWorkflow, scanWorkflow } from "./scan.js";
-import type { Finding, WorkflowIR } from "./ir/types.js";
+import type { Finding, Severity, WorkflowIR } from "./ir/types.js";
 import { prepareWorkflowDependencies } from "./prepare.js";
 
 const MAX_DISCOVERY_DEPTH = 24;
@@ -12,7 +12,14 @@ const MAX_INPUT_BYTES = 1_000_000;
 const MAX_REPOSITORY_BYTES = 10_000_000;
 const MAX_PREPARED_WORKFLOWS = 2_000;
 const POLICY_PATH = ".agentfence.yml";
-const SCANNER_VERSION = "0.1.3";
+const SCANNER_VERSION = "0.1.4";
+
+const severityRank: Record<Severity, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
 
 type Diagnostic = { path: string; code: string; message: string };
 
@@ -288,7 +295,11 @@ export async function runCli(
       a.message.localeCompare(b.message),
   );
   instructionPaths.sort();
-  const exitCode = diagnostics.length ? 2 : findings.length ? 1 : 0;
+  const blockingThreshold = policy ? severityRank[policy.blockingSeverity] : 0;
+  const hasBlockingFinding = findings.some(
+    (finding) => severityRank[finding.severity] >= blockingThreshold,
+  );
+  const exitCode = diagnostics.length ? 2 : hasBlockingFinding ? 1 : 0;
   const report =
     format === "json"
       ? {

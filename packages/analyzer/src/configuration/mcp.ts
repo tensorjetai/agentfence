@@ -217,33 +217,119 @@ export function analyzeMcpConfiguration(path: string, source: string): McpConfig
   return { issues, diagnostics };
 }
 
-function packageFromInvocation(command: string, args: string[]): string[] {
+function packageFromInvocation(command: string, args: string[], depth = 0): string[] {
+  if (depth > 8) return [];
   const executable = command.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (executable === "env") {
+    const unwrapped = unwrapEnvInvocation(args);
+    return unwrapped ? packageFromInvocation(unwrapped.command, unwrapped.args, depth + 1) : [];
+  }
+  if (
+    executable === "sh" ||
+    executable === "bash" ||
+    executable === "zsh" ||
+    executable === "dash" ||
+    executable === "ash" ||
+    executable === "ksh"
+  ) {
+    const script = extractShellCommandScript(args);
+    if (!script) return [];
+    const packages: string[] = [];
+    for (const segment of splitShellCommands(script)) {
+      const tokens = stripShellCommandPrefixes(segment);
+      if (tokens.length > 0) {
+        packages.push(...packageFromInvocation(tokens[0]!, tokens.slice(1), depth + 1));
+      }
+    }
+    return packages;
+  }
   if (executable === "npx" || executable === "npx.cmd" || executable === "bunx") {
-    const explicitPackages = readPackageFlags(args);
+    const separator = args.indexOf("--");
+    const explicitPackages = readPackageFlags(separator >= 0 ? args.slice(0, separator) : args);
     if (explicitPackages.length > 0) return explicitPackages;
-    const candidate = args.find((arg) => !arg.startsWith("-"));
+    const valueFlags =
+      executable === "bunx"
+        ? ["-p", "--package", "--cwd", "-c", "--config", "--env-file"]
+        : [
+            "-p",
+            "--package",
+            "-c",
+            "--call",
+            "--shell",
+            "--userconfig",
+            "--cache",
+            "--registry",
+            "--node-arg",
+            "--node-options",
+            "-w",
+            "--workspace",
+            "--prefix",
+          ];
+    const candidate =
+      separator >= 0
+        ? args.slice(separator + 1)[0]
+        : findPositionalWithValueFlags(args, valueFlags);
     return candidate ? [candidate] : [];
   }
   if (executable === "npm" || executable === "npm.cmd") {
-    const execIndex = args.findIndex((arg) => arg === "exec");
-    if (execIndex < 0) return [];
+    const execIndex = findFirstPositionalIndex(args, [
+      "-C",
+      "--prefix",
+      "--userconfig",
+      "--cache",
+      "--registry",
+      "-w",
+      "--workspace",
+    ]);
+    if (execIndex < 0 || args[execIndex] !== "exec") return [];
     const remaining = args.slice(execIndex + 1);
     const separator = remaining.indexOf("--");
     const explicitPackages = readPackageFlags(
       separator >= 0 ? remaining.slice(0, separator) : remaining,
     );
     if (explicitPackages.length > 0) return explicitPackages;
-    const candidates = separator >= 0 ? remaining.slice(separator + 1) : remaining;
-    const candidate = candidates.find((arg) => !arg.startsWith("-"));
+    const candidate =
+      separator >= 0
+        ? remaining.slice(separator + 1)[0]
+        : findPositionalWithValueFlags(remaining, [
+            "-p",
+            "--package",
+            "-c",
+            "--call",
+            "--shell",
+            "--userconfig",
+            "--cache",
+            "--registry",
+            "--node-options",
+            "-w",
+            "--workspace",
+            "--prefix",
+          ]);
     return candidate ? [candidate] : [];
   }
-  if (
-    (executable === "pnpm" || executable === "yarn" || executable === "bun") &&
-    (args[0] === "dlx" || args[0] === "x")
-  ) {
-    const candidate = args.slice(1).find((arg) => !arg.startsWith("-"));
-    return candidate ? [candidate] : [];
+  if (executable === "pnpm" || executable === "yarn" || executable === "bun") {
+    const leadingValueFlags =
+      executable === "pnpm"
+        ? ["-C", "--dir", "--filter", "-F", "--config", "-c"]
+        : executable === "yarn"
+          ? ["--cwd", "--config", "-c"]
+          : ["--cwd", "--config", "-c", "--env-file"];
+    const subcommandIndex = findFirstPositionalIndex(args, leadingValueFlags);
+    const subcommand = subcommandIndex >= 0 ? args[subcommandIndex] : undefined;
+    if (subcommand === "dlx" || subcommand === "x") {
+      const remaining = args.slice(subcommandIndex + 1);
+      const separator = remaining.indexOf("--");
+      const explicitPackages = readPackageFlags(
+        separator >= 0 ? remaining.slice(0, separator) : remaining,
+      );
+      if (explicitPackages.length > 0) return explicitPackages;
+      const candidate =
+        separator >= 0
+          ? remaining.slice(separator + 1)[0]
+          : findPositionalWithValueFlags(remaining, ["-p", "--package", "-c", "--call"]);
+      return candidate ? [candidate] : [];
+    }
+    return [];
   }
   if (executable === "uvx" || (executable === "uv" && args[0] === "tool" && args[1] === "run")) {
     const remaining = executable === "uvx" ? args : args.slice(2);
@@ -292,22 +378,166 @@ function packageFromInvocation(command: string, args: string[]): string[] {
   return [];
 }
 
-function findPositionalWithValueFlags(args: string[], valueFlags: string[]): string | undefined {
+function findFirstPositionalIndex(args: string[], valueFlags: string[]): number {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
+    if (arg === "--") return i + 1 < args.length ? i + 1 : -1;
     if (valueFlags.includes(arg)) {
       i += 1;
       continue;
     }
     if (arg.startsWith("-")) continue;
-    return arg;
+    return i;
+  }
+  return -1;
+}
+
+function findPositionalWithValueFlags(args: string[], valueFlags: string[]): string | undefined {
+  const index = findFirstPositionalIndex(args, valueFlags);
+  return index >= 0 ? args[index] : undefined;
+}
+
+function unwrapEnvInvocation(args: string[]): { command: string; args: string[] } | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--") {
+      return args[i + 1] ? { command: args[i + 1]!, args: args.slice(i + 2) } : undefined;
+    }
+    if ((arg === "-S" || arg === "--split-string") && args[i + 1] !== undefined) {
+      return unwrapEnvInvocation([...tokenizeShellWords(args[i + 1]!), ...args.slice(i + 2)]);
+    }
+    if (arg.startsWith("--split-string=")) {
+      return unwrapEnvInvocation([
+        ...tokenizeShellWords(arg.slice("--split-string=".length)),
+        ...args.slice(i + 1),
+      ]);
+    }
+    if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "--chdir") {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) continue;
+    return { command: arg, args: args.slice(i + 1) };
   }
   return undefined;
+}
+
+function extractShellCommandScript(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "-o" || arg === "+o") {
+      i += 1;
+      continue;
+    }
+    if (/^-[A-Za-z]*c$/.test(arg)) return args[i + 1];
+    if (arg === "--" || !arg.startsWith("-")) break;
+  }
+  return undefined;
+}
+
+function tokenizeShellWords(input: string): string[] {
+  return splitShellCommands(input).flat();
+}
+
+function splitShellCommands(input: string): string[][] {
+  const commands: string[][] = [];
+  let tokens: string[] = [];
+  let current = "";
+  let inToken = false;
+  let quote: "'" | '"' | undefined;
+
+  const flushToken = () => {
+    if (inToken) {
+      tokens.push(current);
+      current = "";
+      inToken = false;
+    }
+  };
+  const flushCommand = () => {
+    flushToken();
+    if (tokens.length > 0) {
+      commands.push(tokens);
+      tokens = [];
+    }
+  };
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]!;
+    if (quote === "'") {
+      if (ch === "'") quote = undefined;
+      else current += ch;
+      inToken = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\") {
+        if (i + 1 < input.length) current += input[++i]!;
+      } else if (ch === '"') {
+        quote = undefined;
+      } else {
+        current += ch;
+      }
+      inToken = true;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 < input.length) {
+        current += input[++i]!;
+        inToken = true;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inToken = true;
+      continue;
+    }
+    if (ch === ";" || ch === "\n" || ch === "|") {
+      if (ch === "|" && input[i + 1] === "|") i += 1;
+      flushCommand();
+      continue;
+    }
+    if (ch === "&" && input[i + 1] === "&") {
+      i += 1;
+      flushCommand();
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flushToken();
+      continue;
+    }
+    current += ch;
+    inToken = true;
+  }
+  flushCommand();
+  return commands;
+}
+
+function stripShellCommandPrefixes(tokens: string[]): string[] {
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index]!;
+    if (token === "exec" || token === "command" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return tokens.slice(index);
 }
 
 function isInsecureRemoteMcpUrl(url: string): boolean {
   if (!/^http:\/\//i.test(url)) return false;
   return !/^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(url);
+}
+
+const TOKEN_VALUE_PATTERN =
+  /(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,})/;
+const SECRET_KEY_PATTERN = /(?:TOKEN|SECRET|API[-_]?KEY|PASSWORD|AUTHORIZATION)/i;
+
+function isPlaceholder(value: string): boolean {
+  return /^(?:Bearer\s+)?\$\{[^}]+\}$/i.test(value.trim());
 }
 
 function findHardcodedCredentialFields(raw: Record<string, unknown>): string[] {
@@ -317,12 +547,10 @@ function findHardcodedCredentialFields(raw: Record<string, unknown>): string[] {
     for (const [key, value] of Object.entries(section)) {
       if (typeof value !== "string") continue;
       const trimmed = value.trim();
-      if (!trimmed || /^\$\{[^}]+\}$/.test(trimmed)) continue;
+      if (!trimmed || isPlaceholder(trimmed)) continue;
       if (
-        /^(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{16,})$/.test(
-          trimmed,
-        ) ||
-        (/(?:TOKEN|SECRET|API_KEY|PASSWORD|AUTHORIZATION)/i.test(key) && trimmed.length >= 20)
+        TOKEN_VALUE_PATTERN.test(trimmed) ||
+        (SECRET_KEY_PATTERN.test(key) && trimmed.length >= 20)
       ) {
         flagged.push(key);
       }
@@ -330,7 +558,83 @@ function findHardcodedCredentialFields(raw: Record<string, unknown>): string[] {
   };
   checkSection(raw.env);
   checkSection(raw.headers);
+  if (typeof raw.url === "string" && hasCredentialInUrl(raw.url)) flagged.push("url");
+  if (typeof raw.serverUrl === "string" && hasCredentialInUrl(raw.serverUrl)) {
+    flagged.push("serverUrl");
+  }
+  if (hasCredentialInArgs(raw.args)) flagged.push("args");
   return flagged;
+}
+
+function hasCredentialInUrl(rawUrl: string): boolean {
+  const trimmed = rawUrl.trim();
+  if (!trimmed || isPlaceholder(trimmed)) return false;
+  if (TOKEN_VALUE_PATTERN.test(trimmed)) return true;
+  const schemeMatch = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/@?#]+)@/.exec(trimmed);
+  if (schemeMatch?.[1]) {
+    const userinfo = schemeMatch[1];
+    const colon = userinfo.indexOf(":");
+    if (colon >= 0) {
+      const password = userinfo.slice(colon + 1);
+      if (password && !isPlaceholder(password)) return true;
+    } else if (!isPlaceholder(userinfo) && TOKEN_VALUE_PATTERN.test(userinfo)) {
+      return true;
+    }
+  }
+  try {
+    const parsed = new URL(trimmed);
+    for (const [key, value] of parsed.searchParams.entries()) {
+      if (!value || isPlaceholder(value)) continue;
+      if (TOKEN_VALUE_PATTERN.test(value) || (SECRET_KEY_PATTERN.test(key) && value.length >= 20)) {
+        return true;
+      }
+    }
+  } catch {
+    // Unparseable URLs (such as templated hosts) still undergo userinfo and token checks above.
+  }
+  return false;
+}
+
+function hasCredentialInArgs(rawArgs: unknown): boolean {
+  if (!Array.isArray(rawArgs)) return false;
+  const args = rawArgs.filter((arg): arg is string => typeof arg === "string");
+  for (let i = 0; i < args.length; i += 1) {
+    const trimmed = args[i]!.trim();
+    if (!trimmed || isPlaceholder(trimmed)) continue;
+    if (hasCredentialInUrl(trimmed)) return true;
+    if (TOKEN_VALUE_PATTERN.test(trimmed)) return true;
+    const eq = trimmed.indexOf("=");
+    if (eq > 0) {
+      const key = trimmed.slice(0, eq);
+      const value = trimmed.slice(eq + 1).trim();
+      if (
+        value &&
+        !isPlaceholder(value) &&
+        (TOKEN_VALUE_PATTERN.test(value) || (SECRET_KEY_PATTERN.test(key) && value.length >= 20))
+      ) {
+        return true;
+      }
+    }
+    const colon = trimmed.indexOf(":");
+    if (colon > 0) {
+      const key = trimmed.slice(0, colon);
+      const value = trimmed.slice(colon + 1).trim();
+      if (
+        value &&
+        !isPlaceholder(value) &&
+        (TOKEN_VALUE_PATTERN.test(value) || (SECRET_KEY_PATTERN.test(key) && value.length >= 20))
+      ) {
+        return true;
+      }
+    }
+    if (trimmed.startsWith("-") && SECRET_KEY_PATTERN.test(trimmed) && i + 1 < args.length) {
+      const next = args[i + 1]!.trim();
+      if (next && !next.startsWith("-") && !isPlaceholder(next) && next.length >= 20) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function readPackageFlags(args: string[]): string[] {
@@ -370,7 +674,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function findStringOffset(source: string, value: string): number {
   const encoded = JSON.stringify(value);
   const offset = source.indexOf(encoded);
-  return offset < 0 ? 0 : offset;
+  if (offset >= 0) return offset;
+  const rawOffset = source.indexOf(value);
+  return rawOffset < 0 ? 0 : rawOffset;
 }
 
 function findKeyValueOffset(source: string, key: string, value: string): number {

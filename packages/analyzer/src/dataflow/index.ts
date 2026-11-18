@@ -57,6 +57,11 @@ function resolveTaint(
   }
   const direct = taintForReference(path);
   if (direct) return { label: direct, source: path };
+  if (/^(?:steps|jobs|needs)\..*\.outputs\./.test(path)) {
+    const agentOutput = resolveAgentOutput(workflow, job, step, path, new Set());
+    if (agentOutput) return { label: "AGENT_OUTPUT", source: agentOutput };
+    return undefined;
+  }
   if (!path.startsWith("env.") || visited.has(path)) return undefined;
   visited.add(path);
   const name = path.slice(4);
@@ -106,7 +111,7 @@ function resolveAgentOutput(
   ) {
     return path;
   }
-  const crossJob = /^needs\.([^.]+)\.outputs\.([^.]+)$/.exec(path);
+  const crossJob = /^(?:needs|jobs)\.([^.]+)\.outputs\.([^.]+)$/.exec(path);
   if (crossJob) {
     const producer = workflow.jobs.find((candidate) => candidate.id === crossJob[1]);
     if ((producer?.reusableOutputSources?.[crossJob[2] ?? ""]?.length ?? 0) > 0) return path;

@@ -318,6 +318,7 @@ jobs:
     expect(result.findings.some((item) => item.ruleId === "AF002")).toBe(true);
 
     const plainInference = scan(`on: issues
+permissions: {}
 jobs:
   x:
     steps:
@@ -326,6 +327,19 @@ jobs:
           prompt: \${{ github.event.issue.body }}
 `);
     expect(plainInference.findings.some((item) => item.ruleId === "AF001")).toBe(false);
+
+    const omittedPermissionsInference = scan(`on: issues
+jobs:
+  x:
+    steps:
+      - uses: actions/ai-inference@v1
+        with:
+          prompt: \${{ github.event.issue.body }}
+`);
+    const omittedAf001 = omittedPermissionsInference.findings.find(
+      (item) => item.ruleId === "AF001",
+    );
+    expect(omittedAf001?.privilegeContext).toEqual(["default-permissions"]);
 
     const shellEnabled = scan(`on: issues
 jobs:
@@ -865,6 +879,250 @@ jobs:
 `,
       ["AF001", "AF006"],
     );
+  });
+
+  it("does not emit AF001 or AF006 for benign non-agent step or job outputs", () => {
+    const benign = scan(`on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  prepare:
+    outputs:
+      tag: \${{ steps.meta.outputs.tag }}
+    steps:
+      - id: meta
+        run: echo "tag=v1.0.0" >> "$GITHUB_OUTPUT"
+  review:
+    needs: prepare
+    env:
+      FROM_JOB: \${{ needs.prepare.outputs.tag }}
+    steps:
+      - id: cache
+        uses: actions/cache@v4
+      - uses: openai/codex-action@v1
+        with:
+          openai-api-key: \${{ secrets.OPENAI_API_KEY }}
+          prompt: "Check \${{ steps.cache.outputs.cache-hit }} \${{ env.FROM_JOB }} \${{ jobs.prepare.outputs.tag }}"
+`);
+    expect(benign.findings.some((item) => item.ruleId === "AF001")).toBe(false);
+    expect(benign.findings.some((item) => item.ruleId === "AF006")).toBe(false);
+
+    const agentChained = scan(`on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  generate:
+    outputs:
+      plan: \${{ steps.planner.outputs.final-message }}
+    steps:
+      - id: planner
+        uses: openai/codex-action@v1
+        with:
+          prompt: plan
+  execute:
+    needs: generate
+    steps:
+      - uses: openai/codex-action@v1
+        with:
+          openai-api-key: \${{ secrets.OPENAI_API_KEY }}
+          prompt: \${{ needs.generate.outputs.plan }}
+`);
+    expect(agentChained.findings.some((item) => item.ruleId === "AF001")).toBe(true);
+    expect(agentChained.findings.some((item) => item.ruleId === "AF006")).toBe(true);
+  });
+
+  it("AF003 resolves env indirection and omitted permissions privilege", () => {
+    expectRules(
+      `on: pull_request_target
+permissions:
+  contents: write
+jobs:
+  x:
+    env:
+      PR_REF: \${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: \${{ env.PR_REF }}
+`,
+      ["AF003"],
+    );
+    expectRules(
+      `on: pull_request_target
+permissions:
+  contents: write
+jobs:
+  x:
+    steps:
+      - uses: actions/checkout@v5
+        env:
+          PR_REF: refs/pull/\${{ github.event.pull_request.number }}/merge
+        with:
+          ref: \${{ env.PR_REF }}
+`,
+      ["AF003"],
+    );
+    expectRules(
+      `on: pull_request
+jobs:
+  x:
+    steps:
+      - uses: actions/checkout@v5
+`,
+      ["AF003"],
+    );
+  });
+
+  it("AF004 rejects issue.author_association on issue_comment and strips expression wrappers", () => {
+    const issueAssocBypass = scan(`on: issue_comment
+permissions: {}
+jobs:
+  x:
+    if: github.event.issue.author_association == 'OWNER'
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+        with:
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(issueAssocBypass.findings.some((item) => item.ruleId === "AF004")).toBe(true);
+
+    const wrappedCommentGate = scan(`on: issue_comment
+permissions: {}
+jobs:
+  x:
+    if: \${{ github.event.comment.author_association == 'OWNER' }}
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+        with:
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(wrappedCommentGate.findings.some((item) => item.ruleId === "AF004")).toBe(false);
+
+    const senderGate = scan(`on: issue_comment
+permissions: {}
+jobs:
+  x:
+    if: \${{ github.event.sender.login == 'octocat' }}
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+        with:
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(senderGate.findings.some((item) => item.ruleId === "AF004")).toBe(false);
+
+    const mixedEventGate = scan(`on: [issues, issue_comment]
+permissions: {}
+jobs:
+  x:
+    if: (github.event_name == 'issues' && github.event.issue.author_association == 'OWNER') || (github.event_name == 'issue_comment' && github.event.comment.author_association == 'OWNER')
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+        with:
+          prompt: hello
+`);
+    expect(mixedEventGate.findings.some((item) => item.ruleId === "AF004")).toBe(false);
+  });
+
+  it("supports inline agentfence-ignore on the same line as job_id:", () => {
+    const single = scan(`on: issues
+permissions: {}
+jobs:
+  triage: # agentfence-ignore: AF004 -- maintainer gated environment
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+`);
+    expect(single.findings.find((item) => item.ruleId === "AF004")?.suppressed?.reason).toBe(
+      "maintainer gated environment",
+    );
+
+    const scoped = scan(`on: issues
+permissions: {}
+jobs:
+  first:
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+  second: # agentfence-ignore: AF004 -- only second job is gated
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+`);
+    const active = scoped.findings.find((item) => item.ruleId === "AF004");
+    expect(active?.suppressed).toBeUndefined();
+    expect(active?.range.start.line).toBe(6);
+  });
+
+  it("handles claude_args --allowedTools and --disallowedTools accurately", () => {
+    const readOnly = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER'
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_args: '--allowedTools "Read,Grep,Glob"'
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(readOnly.findings.some((item) => item.ruleId === "AF001")).toBe(false);
+
+    const commaSeparatedBash = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER'
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_args: '--allowedTools "Read,Bash(git:*)"'
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(commaSeparatedBash.findings.some((item) => item.ruleId === "AF001")).toBe(true);
+
+    const editAllowed = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER'
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_args: '--allowedTools=Read,Edit'
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(editAllowed.findings.some((item) => item.ruleId === "AF001")).toBe(true);
+
+    const disallowedBash = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER'
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_args: '--disallowedTools Bash'
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(disallowedBash.findings.some((item) => item.ruleId === "AF001")).toBe(false);
+
+    const partialDisallowedBash = scan(`on: issue_comment
+permissions: {}
+jobs:
+  review:
+    if: github.event.comment.author_association == 'OWNER'
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_args: '--disallowedTools "Bash(rm:*)"'
+          prompt: \${{ github.event.comment.body }}
+`);
+    expect(partialDisallowedBash.findings.some((item) => item.ruleId === "AF001")).toBe(true);
+  });
+
+  it("handles gh-aw case-insensitive tools like Bash and Edit", () => {
+    const result = scanWorkflow({
+      path: ".github/workflows/review.md",
+      source: "---\non: issues\npermissions: {}\ntools:\n  Bash: true\n---\nReview.\n",
+    });
+    expect(result.workflow.jobs[0]?.steps[0]?.capabilities).toContain("SHELL_CAPABILITY");
   });
 });
 

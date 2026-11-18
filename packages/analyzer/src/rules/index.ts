@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { isSuppressed, type AgentFencePolicy } from "@agentfence/policy";
 import { agentOutputShellPath, promptTaintPaths } from "../dataflow/index.js";
-import { parseExpressions } from "../expressions/index.js";
+import { parseExpressions, stripExpressionWrapper } from "../expressions/index.js";
 import { hasImplicitWriteActorGuard } from "../providers/index.js";
 import type {
+  ExpressionReference,
   Finding,
   PermissionMap,
   RuleId,
   Severity,
+  Trigger,
   WorkflowIR,
   WorkflowJob,
   WorkflowStep,
@@ -45,7 +47,7 @@ export function evaluateRules(
     const jobSecrets = jobHasAnySecrets(job);
     for (const agent of agents) {
       const hasSecrets = agentHasSecrets(job, agent);
-      const trustedGate = hasTrustGate(job, agent);
+      const trustedGate = hasTrustGate(workflow, job, agent);
       const paths = promptTaintPaths(workflow, job, agent);
       for (const path of paths) {
         if (privilege.length > 0 || hasSecrets || agent.capabilities.includes("SHELL_CAPABILITY")) {
@@ -125,14 +127,20 @@ export function evaluateRules(
     }
     for (const checkout of job.steps.filter((step) => step.uses?.startsWith("actions/checkout@"))) {
       const ref = checkout.with.ref ?? "";
-      const refExpressions = parseExpressions(ref).references;
+      const {
+        references: refExpressions,
+        refTexts,
+        emptyInputRef,
+      } = resolveCheckoutRef(workflow, job, checkout);
       const untrustedRefExpr = refExpressions.some(
         (item) =>
           /pull_request\.head|head_ref|workflow_run\.head_|merge_commit_sha/.test(item.path) ||
-          (/refs\/pull\//i.test(ref) && /(?:pull_request|issue)\.number/.test(item.path)),
+          (refTexts.some((text) => /refs\/pull\//i.test(text)) &&
+            /(?:pull_request|issue)\.number/.test(item.path)),
       );
       const defaultPullRequestCheckout =
-        !ref && workflow.triggers.some((trigger) => trigger.event === "pull_request");
+        (!ref || emptyInputRef) &&
+        workflow.triggers.some((trigger) => trigger.event === "pull_request");
       const untrusted = untrustedRefExpr || defaultPullRequestCheckout;
       if (untrusted && (privilege.length > 0 || jobSecrets)) {
         findings.push(
@@ -206,12 +214,16 @@ function appliesToFinding(
   for (const job of workflow.jobs) {
     if (job.range.path !== finding.path) continue;
     for (const step of job.steps) {
+      const jobLine = sourceMetadata.jobStartLines.get(job.id);
+      const stepLine = sourceMetadata.stepStartLines.get(step.range.start.offset);
       if (
         step.range.path === finding.path &&
         step.range.start.offset <= finding.range.start.offset &&
         step.range.end.offset >= finding.range.start.offset &&
-        (sourceMetadata.jobStartLines.get(job.id) === suppressionLine + 1 ||
-          sourceMetadata.stepStartLines.get(step.range.start.offset) === suppressionLine + 1)
+        (jobLine === suppressionLine ||
+          jobLine === suppressionLine + 1 ||
+          stepLine === suppressionLine ||
+          stepLine === suppressionLine + 1)
       ) {
         return true;
       }
@@ -269,19 +281,16 @@ function effectivePermissions(
 }
 
 function privilegeContext(permissions: PermissionMap | undefined): string[] {
+  if (permissions === undefined) return ["default-permissions"];
   if (permissions === "write-all") return ["write-all"];
-  if (!permissions || permissions === "read-all") return [];
+  if (permissions === "read-all") return [];
   return Object.entries(permissions)
     .filter(([, value]) => value === "write")
     .map(([scope]) => `${scope}:write`);
 }
 
 function excessivePermissions(permissions: PermissionMap | undefined): boolean {
-  return (
-    permissions === undefined ||
-    permissions === "write-all" ||
-    privilegeContext(permissions).length > 0
-  );
+  return privilegeContext(permissions).length > 0;
 }
 
 function agentHasSecrets(job: WorkflowJob, agent: WorkflowStep): boolean {
@@ -332,39 +341,113 @@ function splitTopLevelBoolean(condition: string, operator: "||" | "&&"): string[
   return parts.filter(Boolean);
 }
 
-function factorEnforcesTrustGate(factor: string): boolean {
-  const trimmed = factor.trim();
+function resolveCheckoutRef(
+  workflow: WorkflowIR,
+  job: WorkflowJob,
+  checkout: WorkflowStep,
+): { references: ExpressionReference[]; refTexts: string[]; emptyInputRef: boolean } {
+  const ref = checkout.with.ref ?? "";
+  const initialRefs = checkout.expressionBindings?.["with.ref"] ?? parseExpressions(ref).references;
+  const refTexts = ref ? [ref] : [];
+  const references: ExpressionReference[] = [];
+  const visited = new Set<string>();
+  const directInput = /^\$\{\{\s*inputs\.([^.\s}]+)\s*\}\}$/.exec(ref.trim())?.[1];
+  const emptyInputRef = Boolean(directInput && workflow.invocation?.inputs[directInput] === "");
+
+  const walk = (refs: ExpressionReference[]) => {
+    for (const item of refs) {
+      const inputName = /^inputs\.([^.]+)$/.exec(item.path)?.[1];
+      if (inputName && workflow.invocation?.inputs[inputName] !== undefined) {
+        if (visited.has(item.path)) continue;
+        visited.add(item.path);
+        const inputValue = workflow.invocation.inputs[inputName];
+        if (inputValue) refTexts.push(inputValue);
+        walk(workflow.invocation.inputReferences[inputName] ?? []);
+        continue;
+      }
+      if (item.path.startsWith("env.")) {
+        if (visited.has(item.path)) continue;
+        visited.add(item.path);
+        const name = item.path.slice(4);
+        const value = checkout.env[name] ?? job.env[name] ?? workflow.env[name];
+        if (value) refTexts.push(value);
+        const envRefs =
+          checkout.expressionBindings?.[`env.${name}`] ??
+          (value ? parseExpressions(value).references : []);
+        walk(envRefs);
+        continue;
+      }
+      references.push(item);
+    }
+  };
+
+  walk(initialRefs);
+  return { references, refTexts, emptyInputRef };
+}
+
+function factorEnforcesTrustGate(factor: string, allowIssueAssociation: boolean): boolean {
+  const trimmed = stripExpressionWrapper(factor);
   if (!trimmed || trimmed.startsWith("!")) return false;
   if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
-    return expressionEnforcesTrustGate(trimmed.slice(1, -1));
+    return expressionEnforcesTrustGateInner(trimmed.slice(1, -1), allowIssueAssociation);
+  }
+  if (
+    !allowIssueAssociation &&
+    /\bgithub\.event\.(?:issue|pull_request)\.author_association\b/i.test(trimmed)
+  ) {
+    return false;
   }
   const hasAssociation =
     /^(?:github\.event\.[^&\s]*\.)?author_association\s*==\s*['"](?:OWNER|MEMBER|COLLABORATOR)['"]$/i.test(
       trimmed,
     ) ||
     /^contains\([^)]*(?:OWNER|MEMBER|COLLABORATOR)[^)]*author_association[^)]*\)$/i.test(trimmed);
-  const hasFixedActor = /^github\.actor\s*==\s*['"][A-Za-z0-9](?:[A-Za-z0-9-]{0,38})['"]$/i.test(
-    trimmed,
-  );
+  const hasFixedActor =
+    /^(?:github\.actor|github\.event\.sender\.login)\s*==\s*['"][A-Za-z0-9](?:[A-Za-z0-9-]{0,38})['"]$/i.test(
+      trimmed,
+    );
   return hasAssociation || hasFixedActor;
 }
 
-function clauseEnforcesTrustGate(clause: string): boolean {
-  const factors = splitTopLevelBoolean(clause, "&&");
-  return factors.length > 0 && factors.some(factorEnforcesTrustGate);
+function clauseExcludesIssueComment(factors: string[]): boolean {
+  return factors.some((factor) => {
+    const trimmed = stripExpressionWrapper(factor)
+      .replace(/^\(+|\)+$/g, "")
+      .trim();
+    return /^github\.event_name\s*==\s*['"](?!issue_comment['"])[^'"]+['"]$/i.test(trimmed);
+  });
 }
 
-function expressionEnforcesTrustGate(condition: string | undefined): boolean {
-  const trimmed = (condition ?? "").trim();
+function clauseEnforcesTrustGate(clause: string, allowIssueAssociation: boolean): boolean {
+  const factors = splitTopLevelBoolean(clause, "&&");
+  if (factors.length === 0) return false;
+  const allowIssueInClause = allowIssueAssociation || clauseExcludesIssueComment(factors);
+  return factors.some((factor) => factorEnforcesTrustGate(factor, allowIssueInClause));
+}
+
+function expressionEnforcesTrustGateInner(
+  condition: string | undefined,
+  allowIssueAssociation: boolean,
+): boolean {
+  const trimmed = stripExpressionWrapper(condition ?? "");
   if (!trimmed) return false;
   const clauses = splitTopLevelBoolean(trimmed, "||");
-  return clauses.length > 0 && clauses.every(clauseEnforcesTrustGate);
+  return (
+    clauses.length > 0 &&
+    clauses.every((clause) => clauseEnforcesTrustGate(clause, allowIssueAssociation))
+  );
 }
 
-function hasTrustGate(job: WorkflowJob, agent: WorkflowStep): boolean {
+function expressionEnforcesTrustGate(condition: string | undefined, triggers: Trigger[]): boolean {
+  const allowIssueAssociation = !triggers.some((trigger) => trigger.event === "issue_comment");
+  return expressionEnforcesTrustGateInner(condition, allowIssueAssociation);
+}
+
+function hasTrustGate(workflow: WorkflowIR, job: WorkflowJob, agent: WorkflowStep): boolean {
   return (
-    expressionEnforcesTrustGate(job.if) ||
-    expressionEnforcesTrustGate(agent.if) ||
+    expressionEnforcesTrustGate(workflow.invocation?.callerIf, workflow.triggers) ||
+    expressionEnforcesTrustGate(job.if, workflow.triggers) ||
+    expressionEnforcesTrustGate(agent.if, workflow.triggers) ||
     hasImplicitWriteActorGuard(agent)
   );
 }

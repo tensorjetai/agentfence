@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { parseExpressions } from "../expressions/index.js";
+import { parseExpressions, stripExpressionWrapper } from "../expressions/index.js";
 import { builtInProfiles, ProviderRegistry, type ProviderProfile } from "../providers/index.js";
 import type {
   AnalysisCompleteness,
@@ -191,9 +191,11 @@ export async function resolveReusableWorkflows(
         job.permissions ?? workflow.permissions,
         requestedPermissions,
       );
+      const callerIf = combineCallerConditions(invocation?.callerIf, job.if);
       const context: WorkflowInvocation = {
         callerPath: path,
         callerJobId: job.id,
+        ...(callerIf ? { callerIf } : {}),
         inputs: inputMap,
         inputReferences,
         secrets: secretMap,
@@ -461,6 +463,17 @@ function intersectPermissions(
           : "write";
   }
   return result;
+}
+
+function combineCallerConditions(
+  inherited: string | undefined,
+  current: string | undefined,
+): string | undefined {
+  const parts = [inherited, current]
+    .map((item) => (item ? stripExpressionWrapper(item) : ""))
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+  return parts.length === 1 ? parts[0] : parts.map((part) => `(${part})`).join(" && ");
 }
 
 function resolveLocalPath(callerPath: string, uses: string): string {

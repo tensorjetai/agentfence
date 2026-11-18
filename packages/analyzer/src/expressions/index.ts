@@ -1,5 +1,15 @@
 import type { ParsedExpressions } from "../ir/types.js";
 
+export function stripExpressionWrapper(value: string): string {
+  let current = value.trim();
+  while (current.startsWith("${{") && current.endsWith("}}")) {
+    const scanned = scanExpression(current, 3);
+    if (scanned.end !== current.length - 2 || scanned.quote !== undefined) break;
+    current = current.slice(3, -2).trim();
+  }
+  return current;
+}
+
 const referenceRootPattern = /^(github|inputs|env|steps|jobs|needs|secrets|matrix)\b/;
 
 export function parseExpressions(value: string): ParsedExpressions {
@@ -71,15 +81,15 @@ function extractReferences(body: string, offset: number): ParsedExpressions["ref
     const segments: string[] = [match[1]!];
     while (end < body.length) {
       const rest = body.slice(end);
-      const property = /^\.([A-Za-z_][\w-]*)/.exec(rest);
+      const property = /^\.(?:([A-Za-z_][\w-]*)|(\d+))/.exec(rest);
       if (property) {
-        segments.push(property[1]!);
+        segments.push((property[1] ?? property[2])!);
         end += property[0].length;
         continue;
       }
-      const bracket = /^\[['"]([^'"\]]+)['"]\]/.exec(rest);
+      const bracket = /^\[\s*(?:['"]([^'"\]]+)['"]|(\d+))\s*\]/.exec(rest);
       if (bracket) {
-        segments.push(bracket[1]!);
+        segments.push((bracket[1] ?? bracket[2])!);
         end += bracket[0].length;
         continue;
       }
@@ -115,6 +125,5 @@ export function taintForReference(path: string) {
   }
   if (/^(?:inputs|github\.event\.inputs)\./.test(path)) return "WORKFLOW_DISPATCH_INPUT" as const;
   if (path === "secrets" || path.startsWith("secrets.")) return "SECRET_REFERENCE" as const;
-  if (/^(steps|jobs|needs)\..*\.outputs\./.test(path)) return "AGENT_OUTPUT" as const;
   return undefined;
 }

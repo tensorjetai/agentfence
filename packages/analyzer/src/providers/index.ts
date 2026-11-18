@@ -171,33 +171,33 @@ function hasShellCapability(profile: ProviderProfile, step: WorkflowStep): boole
     const claudeArgs = step.with["claude_args"] ?? "";
     if (
       parseExpressions(claudeArgs).references.length > 0 ||
-      /--dangerously-skip-permissions|--allowedTools[^,\n]*Bash/i.test(claudeArgs)
+      /--dangerously-skip-permissions/i.test(claudeArgs)
     ) {
       return true;
     }
-    const allowed = (step.with["allowed_tools"] ?? step.with["allowed-tools"] ?? "").trim();
-    if (allowed) {
-      if (parseExpressions(allowed).references.length > 0) return true;
-      const tools = allowed
-        .split(/[\s,]+/)
-        .map((t) => t.trim())
-        .filter(Boolean);
-      return tools.some((tool) =>
-        /^(?:\*|bash(?:\(|$)|shell(?:\(|$)|write|edit|multiedit)/i.test(tool),
-      );
-    }
-    const disallowed = (
+    const allowedInput = (step.with["allowed_tools"] ?? step.with["allowed-tools"] ?? "").trim();
+    const disallowedInput = (
       step.with["disallowed_tools"] ??
       step.with["disallowed-tools"] ??
       ""
     ).trim();
-    if (
-      disallowed &&
-      parseExpressions(disallowed).references.length === 0 &&
-      /(?:^|[\s,])bash(?:\(|,|[\s]|$)/i.test(disallowed)
-    ) {
-      return false;
+    if (allowedInput && parseExpressions(allowedInput).references.length > 0) return true;
+    if (disallowedInput && parseExpressions(disallowedInput).references.length > 0) return true;
+
+    const parsedArgs = parseClaudeToolArgs(claudeArgs);
+    const allowedTools = [...splitToolList(allowedInput), ...parsedArgs.allowedTools];
+    const disallowedTools = [...splitToolList(disallowedInput), ...parsedArgs.disallowedTools];
+    const blocksAllBash = disallowedTools.some((tool) =>
+      /^(?:\*|bash(?:\(\*\))?|shell(?:\(\*\))?)$/i.test(tool),
+    );
+    if (allowedTools.length > 0) {
+      return allowedTools.some(
+        (tool) =>
+          /^(?:\*|bash(?:\(|$)|shell(?:\(|$)|write|edit|multiedit)/i.test(tool) &&
+          !(blocksAllBash && /^(?:bash|shell)(?:\(|$)/i.test(tool)),
+      );
     }
+    if (blocksAllBash) return false;
     return true;
   }
   if (profile.provider === "codex") {
@@ -227,6 +227,100 @@ export function hasImplicitWriteActorGuard(step: WorkflowStep): boolean {
     profile.provider === "codex" &&
     !["", "false"].includes((step.with["allow-bots"] ?? "false").trim().toLowerCase());
   return !permitsNonWriters && !botBypass;
+}
+
+function parseClaudeToolArgs(claudeArgs: string): {
+  allowedTools: string[];
+  disallowedTools: string[];
+} {
+  const allowedTools: string[] = [];
+  const disallowedTools: string[] = [];
+  if (!claudeArgs.trim()) return { allowedTools, disallowedTools };
+  const tokens = tokenizeArgs(claudeArgs);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    const allowedEq = /^--allowed[-_]?tools=(.+)$/i.exec(token);
+    if (allowedEq?.[1]) {
+      allowedTools.push(...splitToolList(allowedEq[1]));
+      continue;
+    }
+    const disallowedEq = /^--disallowed[-_]?tools=(.+)$/i.exec(token);
+    if (disallowedEq?.[1]) {
+      disallowedTools.push(...splitToolList(disallowedEq[1]));
+      continue;
+    }
+    if (/^--allowed[-_]?tools$/i.test(token)) {
+      while (i + 1 < tokens.length && !tokens[i + 1]!.startsWith("-")) {
+        allowedTools.push(...splitToolList(tokens[++i]!));
+      }
+      continue;
+    }
+    if (/^--disallowed[-_]?tools$/i.test(token)) {
+      while (i + 1 < tokens.length && !tokens[i + 1]!.startsWith("-")) {
+        disallowedTools.push(...splitToolList(tokens[++i]!));
+      }
+    }
+  }
+  return { allowedTools, disallowedTools };
+}
+
+function tokenizeArgs(input: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let inToken = false;
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]!;
+    if (quote !== undefined) {
+      if (ch === "\\" && quote === '"' && i + 1 < input.length) current += input[++i]!;
+      else if (ch === quote) quote = undefined;
+      else current += ch;
+      inToken = true;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < input.length) {
+      current += input[++i]!;
+      inToken = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inToken = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (inToken) {
+        tokens.push(current);
+        current = "";
+        inToken = false;
+      }
+      continue;
+    }
+    current += ch;
+    inToken = true;
+  }
+  if (inToken) tokens.push(current);
+  return tokens;
+}
+
+function splitToolList(value: string): string[] {
+  const tools: string[] = [];
+  let current = "";
+  let depth = 0;
+  for (const ch of value) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (depth === 0 && (ch === "," || /\s/.test(ch))) {
+      const trimmed = current.trim();
+      if (trimmed) tools.push(trimmed);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const trailing = current.trim();
+  if (trailing) tools.push(trailing);
+  return tools;
 }
 
 function globMatches(pattern: string, input: string): boolean {

@@ -58,7 +58,7 @@ describe("local CLI", () => {
   });
 
   it("prints the package version and exits successfully", async () => {
-    expect(await runCli(["--version"])).toEqual({ exitCode: 0, output: "0.1.3\n" });
+    expect(await runCli(["--version"])).toEqual({ exitCode: 0, output: "0.1.4\n" });
   });
 
   it("escapes terminal control characters in text output", async () => {
@@ -230,6 +230,87 @@ describe("local CLI", () => {
       expect(
         JSON.parse(result.output).diagnostics.some(
           (diagnostic: { code: string }) => diagnostic.code === "repository-size-limit",
+        ),
+      ).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces blockingSeverity from .agentfence.yml for CLI exit codes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentfence-blocking-"));
+    try {
+      await mkdir(join(root, ".github/workflows"), { recursive: true });
+      // AF004 (high) and AF007 (medium) only — no critical findings
+      await writeFile(
+        join(root, ".github/workflows/triage.yml"),
+        "on: issues\npermissions: {}\njobs:\n  triage:\n    steps:\n      - uses: google-github-actions/run-gemini-cli@v0\n        with:\n          prompt: summarize\n",
+      );
+      await writeFile(join(root, ".agentfence.yml"), "version: 1\nblockingSeverity: critical\n");
+      const belowCritical = await runCli([], root);
+      expect(belowCritical.exitCode).toBe(0);
+      expect(JSON.parse(belowCritical.output).findings.length).toBeGreaterThan(0);
+
+      await writeFile(join(root, ".agentfence.yml"), "version: 1\nblockingSeverity: high\n");
+      const atHigh = await runCli([], root);
+      expect(atHigh.exitCode).toBe(1);
+
+      await writeFile(
+        join(root, ".github/workflows/triage.yml"),
+        "on: workflow_dispatch\npermissions: {}\njobs:\n  ok:\n    steps:\n      - run: echo ok\n",
+      );
+      await writeFile(
+        join(root, ".mcp.json"),
+        JSON.stringify({ mcpServers: { db: { command: "npx", args: ["db-server"] } } }),
+      );
+      const mediumUnderHigh = await runCli([], root);
+      expect(mediumUnderHigh.exitCode).toBe(0);
+      expect(JSON.parse(mediumUnderHigh.output).findings[0]?.ruleId).toBe("AF007");
+
+      await writeFile(join(root, ".agentfence.yml"), "version: 1\nblockingSeverity: medium\n");
+      const mediumUnderMedium = await runCli([], root);
+      expect(mediumUnderMedium.exitCode).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates caller job if trust gates and detects AF003 checkout inputs across reusable and composite boundaries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentfence-reusable-gates-"));
+    try {
+      await mkdir(join(root, ".github/workflows"), { recursive: true });
+      await mkdir(join(root, ".github/actions/checkout-wrap"), { recursive: true });
+      await writeFile(
+        join(root, ".github/actions/checkout-wrap/action.yml"),
+        "name: Checkout\ninputs:\n  ref: {}\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v5\n      with:\n        ref: ${{ inputs.ref }}\n",
+      );
+      await writeFile(
+        join(root, ".github/workflows/child.yml"),
+        "on:\n  workflow_call:\n    inputs:\n      ref: {}\njobs:\n  run:\n    steps:\n      - uses: actions/checkout@v5\n        with:\n          ref: ${{ inputs.ref }}\n      - uses: google-github-actions/run-gemini-cli@v0\n        with:\n          prompt: ${{ github.event.comment.body }}\n",
+      );
+      await writeFile(
+        join(root, ".github/workflows/caller.yml"),
+        "on: issue_comment\npermissions:\n  contents: write\njobs:\n  gated:\n    if: ${{ github.event.comment.author_association == 'OWNER' }}\n    uses: ./.github/workflows/child.yml\n    with:\n      ref: ${{ github.event.pull_request.head.sha }}\n  composite_check:\n    if: github.event.comment.author_association == 'OWNER'\n    steps:\n      - uses: ./.github/actions/checkout-wrap\n        with:\n          ref: ${{ github.event.pull_request.head.ref }}\n",
+      );
+      const result = await runCli([], root);
+      const report = JSON.parse(result.output);
+      expect(report.completeness).toBe("complete");
+      expect(
+        report.findings.some(
+          (f: { ruleId: string; path: string }) =>
+            f.ruleId === "AF004" && f.path === ".github/workflows/child.yml",
+        ),
+      ).toBe(false);
+      expect(
+        report.findings.some(
+          (f: { ruleId: string; path: string }) =>
+            f.ruleId === "AF003" && f.path === ".github/workflows/child.yml",
+        ),
+      ).toBe(true);
+      expect(
+        report.findings.some(
+          (f: { ruleId: string; path: string }) =>
+            f.ruleId === "AF003" && f.path === ".github/actions/checkout-wrap/action.yml",
         ),
       ).toBe(true);
     } finally {

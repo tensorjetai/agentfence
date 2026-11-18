@@ -105,7 +105,7 @@ export function parseMarkdownWorkflow(path: string, source: string): WorkflowIR 
             promptExpressions: [],
             capabilities: [
               "NETWORK_CAPABILITY",
-              ...(tools.some((tool) => /bash|shell|edit/.test(tool))
+              ...(tools.some((tool) => /bash|shell|edit/i.test(tool))
                 ? (["SHELL_CAPABILITY"] as const)
                 : []),
             ],

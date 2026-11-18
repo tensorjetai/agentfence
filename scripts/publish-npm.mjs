@@ -68,6 +68,11 @@ function buildPublishManifest(sourcePkg, targetName) {
     version: sourcePkg.version,
     description: sourcePkg.description,
     license: sourcePkg.license,
+    homepage: "https://agentfence.tensorjetai.com",
+    repository: {
+      type: "git",
+      url: "git+https://github.com/tensorjetai/agentfence.git",
+    },
     type: sourcePkg.type,
     engines: sourcePkg.engines,
     bin: sourcePkg.bin,

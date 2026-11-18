@@ -104,7 +104,10 @@ jobs:
           fi
 
           if [[ "$DRY_RUN" == "true" ]]; then
-            pnpm publish:npm --skip-build --pack-only
+            node scripts/publish-npm.mjs --skip-build --pack-only
+          elif [[ -n "$NPM_TOKEN" ]]; then
+            node scripts/publish-npm.mjs --skip-build -- --provenance
           else
-            pnpm publish:npm --skip-build -- --provenance
+            env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG \
+              node scripts/publish-npm.mjs --skip-build -- --provenance --loglevel http
           fi
